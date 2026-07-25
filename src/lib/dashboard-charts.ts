@@ -3,9 +3,22 @@ import {
   dashboardCharts,
   dashboardChartAssignments,
 } from "@/server/db/schema";
-import { eq, or, isNull } from "drizzle-orm";
+import { eq, and, or, isNull } from "drizzle-orm";
 
-export async function getVisibleCharts(orgDbId: string | null) {
+/**
+ * Charts visibles para un user:
+ * - Charts de la enterprise del user
+ * - Que NO estén asignados a ninguna org (visibles a todas las orgs de la enterprise)
+ *   O que estén asignados a la org del user
+ *
+ * Si no hay enterpriseId (superadmin sin contexto), no devuelve nada.
+ */
+export async function getVisibleCharts(
+  orgDbId: string | null,
+  enterpriseId: string | null,
+) {
+  if (!enterpriseId) return [];
+
   const rows = await db
     .select({
       chart: dashboardCharts,
@@ -17,12 +30,15 @@ export async function getVisibleCharts(orgDbId: string | null) {
       eq(dashboardChartAssignments.chartId, dashboardCharts.id),
     )
     .where(
-      orgDbId
-        ? or(
-            isNull(dashboardChartAssignments.organizationId),
-            eq(dashboardChartAssignments.organizationId, orgDbId),
-          )
-        : isNull(dashboardChartAssignments.organizationId),
+      and(
+        eq(dashboardCharts.enterpriseId, enterpriseId),
+        orgDbId
+          ? or(
+              isNull(dashboardChartAssignments.organizationId),
+              eq(dashboardChartAssignments.organizationId, orgDbId),
+            )
+          : isNull(dashboardChartAssignments.organizationId),
+      ),
     )
     .orderBy(dashboardCharts.position);
 

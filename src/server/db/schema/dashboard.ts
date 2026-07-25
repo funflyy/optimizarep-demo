@@ -7,8 +7,9 @@ import {
   timestamp,
   jsonb,
   primaryKey,
+  index,
 } from "drizzle-orm/pg-core";
-import { organizations } from "./index";
+import { organizations, enterprises } from "./index";
 
 export const chartTypeEnum = pgEnum("chart_type", [
   "bar",
@@ -33,17 +34,25 @@ export const aggregationEnum = pgEnum("aggregation", [
   "count",
 ]);
 
-export const dashboardCharts = pgTable("dashboard_charts", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  name: varchar("name", { length: 200 }).notNull(),
-  chartType: chartTypeEnum("chart_type").notNull(),
-  dimension: fieldNameEnum("dimension"),
-  metric: fieldNameEnum("metric").notNull(),
-  aggregation: aggregationEnum("aggregation").notNull(),
-  filters: jsonb("filters"),
-  position: integer("position").default(0).notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+export const dashboardCharts = pgTable(
+  "dashboard_charts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    /** Cada chart vive dentro de una enterprise. Enterprise_admin gestiona los suyos. */
+    enterpriseId: uuid("enterprise_id").references(() => enterprises.id, {
+      onDelete: "cascade",
+    }),
+    name: varchar("name", { length: 200 }).notNull(),
+    chartType: chartTypeEnum("chart_type").notNull(),
+    dimension: fieldNameEnum("dimension"),
+    metric: fieldNameEnum("metric").notNull(),
+    aggregation: aggregationEnum("aggregation").notNull(),
+    filters: jsonb("filters"),
+    position: integer("position").default(0).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [index("charts_enterprise_idx").on(t.enterpriseId)],
+);
 
 export const dashboardChartAssignments = pgTable(
   "dashboard_chart_assignments",
