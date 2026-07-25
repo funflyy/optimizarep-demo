@@ -48,40 +48,33 @@ export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {
  * Procedure con usuario de la BD — base de las capas con scope.
  * Resuelve: isSuperAdmin, role, enterpriseId, orgDbId.
  *
- * Dev: si el user no existe en la BD, lo crea con role=viewer.
- *      (En prod, el user DEBE existir en la BD antes de loguearse.)
+ * ESTRICTO: el user DEBE existir en la BD (pre-registrado por admin).
+ * Si no existe o está inactivo, FORBIDDEN.
+ *
+ * Para pre-registrar un user: usar scripts/promote-superadmin.ts o
+ * scripts/promote-enterprise-admin.ts, o INSERT manual en users.
  */
 export const userProcedure = protectedProcedure.use(async ({ ctx, next }) => {
-  let row = await ctx.db
+  const row = await ctx.db
     .select()
     .from(users)
     .where(eq(users.clerkUserId, ctx.userId))
     .limit(1);
 
-  let user = row[0];
-
-  // Dev: auto-create user as viewer if not yet synced
-  if (!user && process.env.NODE_ENV !== "production") {
-    const [created] = await ctx.db
-      .insert(users)
-      .values({
-        clerkUserId: ctx.userId,
-        email: ctx.userId,
-        role: "viewer",
-      })
-      .returning();
-    user = created;
-  }
+  const user = row[0];
 
   if (!user) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "Usuario no registrado en la plataforma",
+      message: "Usuario no registrado. Contacta al administrador para ser invitado.",
     });
   }
 
   if (!user.isActive) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "Usuario desactivado" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Usuario desactivado. Contacta al administrador.",
+    });
   }
 
   // Resolver enterpriseId desde la org del user
