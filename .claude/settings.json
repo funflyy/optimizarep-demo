@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(PYTHONUTF8=1 PYTHONIOENCODING=utf-8 python -c ' *)",
+      "Read(//c/Users/lucho/Documents/pybot/new_projects/crisgodoy/**)",
+      "PowerShell(Rename-Item 'c:\\\\pybot\\\\impactarep\\\\.agents\\\\rules\\\\mbo-recy-project.md' 'impactarep-project.md')",
+      "PowerShell(Start-Service postgresql-x64-16; $env:PGPASSWORD='postgres'; & \"C:\\\\Program Files\\\\PostgreSQL\\\\16\\\\bin\\\\psql.exe\" -U postgres -h localhost -c \"SELECT datname FROM pg_database WHERE NOT datistemplate;\")",
+      "PowerShell(Start-Service postgresql-x64-16; \\(Get-Service postgresql-x64-16\\).Status)",
+      "PowerShell(\\(Get-CimInstance Win32_Service -Filter \"Name='postgresql-x64-16'\"\\).PathName)",
+      "PowerShell(& \"C:\\\\Program Files\\\\PostgreSQL\\\\16\\\\bin\\\\pg_ctl.exe\" start -D \"C:\\\\Program Files\\\\PostgreSQL\\\\16\\\\data\" -l \"$env:TEMP\\\\pg16.log\" -w; Get-Content \"$env:TEMP\\\\pg16.log\" -Tail 5)",
+      "PowerShell($env:PGPASSWORD='postgres'; & \"C:\\\\Program Files\\\\PostgreSQL\\\\16\\\\bin\\\\psql.exe\" -U postgres -h localhost -c \"SELECT datname FROM pg_database WHERE NOT datistemplate;\"; & \"C:\\\\Program Files\\\\PostgreSQL\\\\16\\\\bin\\\\psql.exe\" -U postgres -h localhost -c \"CREATE DATABASE impactarep;\")",
+      "PowerShell(pnpm db:push)",
+      "PowerShell(pnpm db:seed)",
+      "PowerShell($env:PGPASSWORD='postgres'; & \"C:\\\\Program Files\\\\PostgreSQL\\\\16\\\\bin\\\\psql.exe\" -U postgres -h localhost -c \"DROP DATABASE mbo_recy WITH \\(FORCE\\);\"; & \"C:\\\\Program Files\\\\PostgreSQL\\\\16\\\\bin\\\\psql.exe\" -U postgres -h localhost -c \"SELECT datname FROM pg_database WHERE NOT datistemplate;\")",
+      "PowerShell(Remove-Item -Recurse -Force 'c:\\\\pybot\\\\impactarep\\\\.next' -Confirm:$false)",
+      "PowerShell(pnpm build)",
+      "PowerShell(pnpm add -D @next/env)",
+      "PowerShell($env:PYTHONUTF8=1; python \"C:\\\\Users\\\\lucho\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--pybot-impactarep\\\\f36fd566-09d6-489c-bdd6-98ca16df4db6\\\\scratchpad\\\\an.py\" \"C:\\\\Users\\\\lucho\\\\Documents\\\\pybot\\\\new_projects\\\\impactarep_documentos\\\\reunion-11-jul\\\\MAESTRA BBDD REP_VF2.0.xlsx\" \"📋 Portada||🚗 NEU · Catálogo||🚗 NEU · Línea Base||🚗 NEU · Cumplimiento||📦 ENV · Catálogo||📦 ENV · Línea Base||📦 ENV · Cumplimiento\")",
+      "PowerShell($env:PYTHONUTF8=1; python \"C:\\\\Users\\\\lucho\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--pybot-impactarep\\\\f36fd566-09d6-489c-bdd6-98ca16df4db6\\\\scratchpad\\\\an.py\" \"C:\\\\Users\\\\lucho\\\\Documents\\\\pybot\\\\new_projects\\\\impactarep_documentos\\\\reunion-11-jul\\\\MAESTRA BBDD REP_VF2.0.xlsx\" \"📦 ENV · Catálogo||📦 ENV · Línea Base||⚡ RAEE · Catálogo||⚡ RAEE · Línea Base||🛢️ ALU · Catálogo||🛢️ ALU · Línea Base||🔋 P+RAEE · Catálogo||🔋 P+RAEE · Línea Base\")",
+      "PowerShell($env:PYTHONUTF8=1; python \"C:\\\\Users\\\\lucho\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--pybot-impactarep\\\\f36fd566-09d6-489c-bdd6-98ca16df4db6\\\\scratchpad\\\\an.py\" \"C:\\\\Users\\\\lucho\\\\Documents\\\\pybot\\\\new_projects\\\\impactarep_documentos\\\\reunion-11-jul\\\\MAESTRA BBDD REP_VF2.0.xlsx\" \"🚗 NEU · Cumplimiento||📦 ENV · Cumplimiento||⚡ RAEE · Cumplimiento||🛢️ ALU · Cumplimiento||🔋 P+RAEE · Cumplimiento||📚 Listas REP\" raw)"
+    ]
+  }
+}

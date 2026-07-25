@@ -1,0 +1,22 @@
+services:
+  # ── PostgreSQL 16 ─────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: impactarep_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: impactarep
+      POSTGRES_PASSWORD: impactarep_dev
+      POSTGRES_DB: impactarep
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U impactarep"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

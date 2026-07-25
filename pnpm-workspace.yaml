@@ -1,0 +1,11 @@
+allowBuilds:
+  core-js: true
+  esbuild: true
+  sharp: true
+  unrs-resolver: true
+minimumReleaseAgeExclude:
+  - '@clerk/backend@3.8.1'
+  - '@clerk/nextjs@7.5.6'
+  - '@clerk/react@6.10.3'
+  - '@clerk/shared@4.19.1'
+  - lucide-react@1.21.0
