@@ -2,18 +2,18 @@ services:
   # ── PostgreSQL 16 ─────────────────────────────────────────
   db:
     image: postgres:16-alpine
-    container_name: impactarep_db
+    container_name: optimizarep_db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: impactarep
-      POSTGRES_PASSWORD: impactarep_dev
-      POSTGRES_DB: impactarep
+      POSTGRES_USER: optimizarep
+      POSTGRES_PASSWORD: optimizarep_dev
+      POSTGRES_DB: optimizarep
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U impactarep"]
+      test: ["CMD-SHELL", "pg_isready -U optimizarep"]
       interval: 5s
       timeout: 5s
       retries: 5

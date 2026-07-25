@@ -18,7 +18,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ImpactaREP — Mide · Gestiona · Impacta",
+  title: "OptimizaREP — Inteligencia para gestión REP más eficiente",
   description:
     "Plataforma de gestión integral de cumplimiento Ley REP (20.920) de Chile",
 };

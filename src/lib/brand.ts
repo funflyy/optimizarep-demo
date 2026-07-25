@@ -1,5 +1,5 @@
 /**
- * Branding ImpactaREP — según PDF "colores aplicativo" (julio 2026).
+ * Branding OptimizaREP — verde #7fba2d, verde oscuro #0b442e.
  * Los colores de residuos son estándar del cliente: cada material se
  * grafica SIEMPRE con su color, independiente del orden en el chart.
  */
@@ -30,8 +30,8 @@ export const WASTE_COLORS: Record<string, string> = {
 
 /** Paleta aplicativa (fallback para series sin material asociado) */
 export const APP_PALETTE = [
-  "#17868C", // teal logo
-  "#4E9E3E", // verde logo
+  "#7fba2d", // verde OptimizaREP
+  "#0b442e", // verde oscuro OptimizaREP
   "#E78402", // naranjo
   "#172A48", // navy
   "#00A19A", // verde agua

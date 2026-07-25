@@ -1,6 +1,6 @@
 import postgres from "postgres";
 
-const DATABASE_URL = process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/impactarep";
+const DATABASE_URL = process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/optimizarep";
 const sql = postgres(DATABASE_URL);
 
 async function check() {

@@ -1,9 +1,9 @@
 @echo off
-title ImpactaREP
+title OptimizaREP
 cd /d "%~dp0"
 echo.
 echo  ========================================
-echo    ImpactaREP - Mide Gestiona Impacta
+echo    OptimizaREP - Mide Optimiza Impacta
 echo  ========================================
 echo.
 where node >nul 2>&1

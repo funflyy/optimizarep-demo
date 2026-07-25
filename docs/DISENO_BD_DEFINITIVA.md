@@ -1,8 +1,8 @@
-# Diseño de la Base de Datos Definitiva — ImpactaREP
+# Diseño de la Base de Datos Definitiva — OptimizaREP
 
 > Fuentes: `MAESTRA BBDD REP_VF2.0.xlsx` (reunión 11-jul), `Plataforma REP_Línea Base.xlsx`,
 > transcripción reunión 10-jul-2026 (Luis Droguett ↔ Cristian Godoy) y `correo.txt`.
-> Estado: estructura aplicada a la BD `impactarep`. **Seed definitivo pendiente** (a cargar
+> Estado: estructura aplicada a la BD `optimizarep`. **Seed definitivo pendiente** (a cargar
 > cuando se valide el modelo con el cliente).
 
 ## Principios de diseño (derivados de las observaciones)

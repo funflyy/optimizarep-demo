@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { useProductType } from "@/hooks/use-product-type";
+import { CustomSection } from "./custom-section";
+import type { ChartConfig } from "@/lib/chart-types";
+import type { Piece } from "@/lib/aggregate";
 import {
   Card,
   CardContent,
@@ -396,6 +399,63 @@ function ProductSection({ productType, segment, year, systemName, title }: {
 // ═══════════════════════════════════════════════════════════════
 // DashboardPage — Página principal
 // ═══════════════════════════════════════════════════════════════
+function DashboardCustomCharts({ segment, productType }: { segment: "all" | "dom" | "nodom"; productType: string | null }) {
+  const { data: chartRows } = trpc.dashboardCharts.list.useQuery();
+  const { data: products, error: prodError, isLoading: prodLoading } = trpc.product.list.useQuery({
+    limit: 100,
+    productType: productType ?? undefined,
+  });
+
+  const pieces: Piece[] = useMemo(() => {
+    if (!products?.products) return [];
+    const result = products.products.flatMap((p: any) =>
+      (p.pieces ?? []).flatMap((piece: any) =>
+        (p.salesRecords ?? [{ year: null, unitsSold: null }]).map((sr: any) => ({
+          materialClass: piece.materialClass ?? "",
+          materialDetail: piece.materialDetail ?? "",
+          weightGrams: piece.weightGrams ?? 0,
+          wasteType: piece.wasteType ?? "recyclable",
+          isDomiciliary: piece.isDomiciliary ?? true,
+          salesYear: sr.year ?? null,
+          unitsSold: sr.unitsSold ?? null,
+        }))
+      )
+    );
+    // ponytail: debug log, remove when confirmed working
+    console.log("[CustomCharts] products:", products.products.length, "pieces:", result.length, "sample:", result[0]);
+    return result;
+  }, [products]);
+
+  const filtered = useMemo(() => {
+    if (segment === "all") return pieces;
+    return pieces.filter((p) =>
+      segment === "dom" ? p.isDomiciliary : !p.isDomiciliary
+    );
+  }, [pieces, segment]);
+
+  const configs: ChartConfig[] = useMemo(() => {
+    if (!chartRows) return [];
+    return chartRows.map((c) => ({
+      id: c.id,
+      name: c.name,
+      chartType: c.chartType as ChartConfig["chartType"],
+      dimension: c.dimension as ChartConfig["dimension"],
+      metric: (c.aggregation === "count" ? "pieces" : c.metric) as ChartConfig["metric"],
+      aggregation: c.aggregation as ChartConfig["aggregation"],
+      filters: c.filters as ChartConfig["filters"],
+    }));
+  }, [chartRows]);
+
+  return (
+    <>
+      <p className="text-xs text-muted-foreground p-2 border rounded bg-muted/30">
+        DEBUG: {prodLoading ? "loading..." : prodError ? `ERROR: ${prodError.message}` : `${products?.products?.length} products`}, {pieces.length} pieces, {configs.length} charts
+      </p>
+      <CustomSection configs={configs} pieces={filtered} />
+    </>
+  );
+}
+
 export default function DashboardPage() {
   const [segment, setSegment] = useState<"all" | "dom" | "nodom">("all");
   const [year, setYear] = useState<number | undefined>(undefined);
@@ -507,6 +567,9 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Widgets configurables */}
+      <DashboardCustomCharts segment={segment} productType={productType} />
     </div>
   );
 }

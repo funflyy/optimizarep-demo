@@ -1,4 +1,4 @@
-# Estándares de Codificación — ImpactaREP
+# Estándares de Codificación — OptimizaREP
 
 ## TypeScript / Next.js
 

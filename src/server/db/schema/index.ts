@@ -22,6 +22,7 @@ import { relations } from "drizzle-orm";
 
 export const userRoleEnum = pgEnum("user_role", [
   "admin",
+  "enterprise_admin",
   "analyst",
   "viewer",
 ]);
@@ -53,11 +54,29 @@ export const productTypeEnum = pgEnum("product_type", [
 ]);
 
 // ═══════════════════════════════════════════════════════════════
-// Organizations — Multi-tenant base
+// Enterprises — Top-level tenant (el "buyer" de la plataforma)
+// Una enterprise agrupa N organizations (los clientes del buyer)
+// ═══════════════════════════════════════════════════════════════
+
+export const enterprises = pgTable("enterprises", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: varchar("name", { length: 255 }).notNull(),
+  rut: varchar("rut", { length: 20 }),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Organizations — Multi-tenant base (clientes del buyer)
+// Una organization pertenece a una enterprise.
 // ═══════════════════════════════════════════════════════════════
 
 export const organizations = pgTable("organizations", {
   id: uuid("id").defaultRandom().primaryKey(),
+  enterpriseId: uuid("enterprise_id").references(() => enterprises.id, {
+    onDelete: "restrict",
+  }),
   name: varchar("name", { length: 255 }).notNull(),
   rut: varchar("rut", { length: 20 }),
   clerkOrgId: varchar("clerk_org_id", { length: 255 }).unique(),
@@ -80,6 +99,8 @@ export const users = pgTable("users", {
   lastName: varchar("last_name", { length: 100 }),
   role: userRoleEnum("role").default("viewer").notNull(),
   organizationId: uuid("organization_id").references(() => organizations.id),
+  /** Equivale a "superadmin" — controla toda la plataforma, ignora tenant */
+  isSuperAdmin: boolean("is_super_admin").default(false).notNull(),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -647,10 +668,18 @@ export const auditLog = pgTable(
 // Relations
 // ═══════════════════════════════════════════════════════════════
 
-export const organizationsRelations = relations(organizations, ({ many }) => ({
+export const organizationsRelations = relations(organizations, ({ one, many }) => ({
+  enterprise: one(enterprises, {
+    fields: [organizations.enterpriseId],
+    references: [enterprises.id],
+  }),
   users: many(users),
   products: many(products),
   tariffMappings: many(tariffMappings),
+}));
+
+export const enterprisesRelations = relations(enterprises, ({ many }) => ({
+  organizations: many(organizations),
 }));
 
 export const usersRelations = relations(users, ({ one }) => ({
@@ -856,3 +885,5 @@ export const auditLogRelations = relations(auditLog, ({ one }) => ({
     references: [users.id],
   }),
 }));
+
+export * from "./dashboard";

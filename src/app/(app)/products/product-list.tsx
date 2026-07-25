@@ -68,7 +68,7 @@ export function ProductList() {
               "Peso Total (g)": p.pieces.reduce((a, pc) => a + pc.weightGrams, 0).toFixed(1),
               Ventas: p.salesRecords[0]?.unitsSold ?? "",
             }))}
-            filename="productos_impactarep"
+            filename="productos_optimizarep"
           />
           <Button variant="outline" size="sm" asChild>
             <Link href="/products/import">

@@ -23,18 +23,18 @@ export default function AuthLayout({
         <div className="flex flex-col items-center gap-3">
           <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white/10 shadow-lg backdrop-blur-sm ring-1 ring-white/20">
             <Image
-              src="/ImpactaREP.svg"
-              alt="ImpactaREP"
+              src="/OptimizaREP-icono-blanco.svg"
+              alt="OptimizaREP"
               width={40}
               height={40}
             />
           </div>
           <div className="text-center">
             <h1 className="text-2xl font-semibold tracking-tight text-white">
-              ImpactaREP
+              OptimizaREP
             </h1>
             <p className="mt-1 text-sm text-white/60">
-              Mide · Gestiona · Impacta
+              Inteligencia para gestión REP más eficiente
             </p>
           </div>
         </div>

@@ -1,4 +1,4 @@
-# 🧰 Skills del Proyecto — ImpactaREP
+# 🧰 Skills del Proyecto — OptimizaREP
 
 > **22 skills** seleccionadas para el desarrollo de la plataforma de gestión de residuos y Ley REP.
 > Cada carpeta contiene el SKILL.md + recursos adicionales.

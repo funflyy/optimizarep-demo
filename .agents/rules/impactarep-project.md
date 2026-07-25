@@ -1,4 +1,4 @@
-# Contexto del Proyecto — ImpactaREP
+# Contexto del Proyecto — OptimizaREP
 
 ## Descripción
 
@@ -10,7 +10,7 @@ Producto llave en mano. Hosteado en infraestructura propia (Contabo + Dokploy).
 
 ## Cliente
 
-- **Proyecto**: ImpactaREP
+- **Proyecto**: OptimizaREP
 - **Desarrollador**: PYBOT SPA (pybot.cl)
 - **Cliente final**: Empresas productoras e importadoras sujetas a la Ley REP
 

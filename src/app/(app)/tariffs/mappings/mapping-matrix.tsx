@@ -134,7 +134,7 @@ export function MappingMatrix({ materials, systems }: MappingMatrixProps) {
                   <TableCell className="text-center font-mono text-xs">{mat.count}</TableCell>
                   {systems.map((sys) => {
                     const systemCategories = sys.tariffCategories.filter(
-                      (tc) => tc.segment === segment
+                      (tc) => tc.segment === segment || tc.segment === "Único"
                     );
                     const hasDupes = systemCategories.some(
                       (tc, idx) =>

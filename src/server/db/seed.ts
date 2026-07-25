@@ -17,12 +17,12 @@ import { parseDecimal } from "../../lib/number";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ??
-  "postgresql://postgres:postgres@localhost:5432/impactarep";
+  "postgresql://postgres:postgres@localhost:5432/optimizarep";
 
 const sql = postgres(DATABASE_URL);
 const db = drizzle(sql, { schema });
 
-const DOCS_DIR = "c:/Users/lucho/Documents/pybot/new_projects/impactarep_documentos";
+const DOCS_DIR = "c:/Users/lucho/Documents/pybot/new_projects/optimizarep_documentos";
 const MAESTRA = `${DOCS_DIR}/reunion-11-jul/MAESTRA BBDD REP_VF2.0.xlsx`;
 const LINEA_BASE = `${DOCS_DIR}/Plataforma REP_Línea Base.xlsx`;
 
@@ -75,15 +75,22 @@ function pct(v: unknown): number {
 }
 
 async function main() {
-  console.log("🌱 Seed definitivo ImpactaREP (MAESTRA BBDD v2.0)\n");
+  console.log("🌱 Seed definitivo OptimizaREP (MAESTRA BBDD v2.0)\n");
 
   // ── 0. Limpiar (conserva uf_values) ───────────────────────────
   await sql`TRUNCATE organizations, users, products, product_pieces, sales_records,
     management_systems, tariff_categories, tariffs, tariff_mappings,
     priority_products, organization_priority_products, rep_categories,
     compliance_goals, homologated_categories, tariff_category_homologations,
-    custom_field_definitions, declarations, audit_log CASCADE`;
+    custom_field_definitions, declarations, audit_log, enterprises CASCADE`;
   console.log("🧹 Tablas vaciadas (uf_values conservada)");
+
+  // ── 0.1 Enterprise por defecto (MB) — todas las orgs de la MAESTRA cuelgan de acá ──
+  const [mb] = await db
+    .insert(schema.enterprises)
+    .values({ name: "MB", rut: null })
+    .returning();
+  console.log(`✓ Enterprise MB creada`);
 
   const wb = XLSX.readFile(MAESTRA);
 
@@ -486,7 +493,7 @@ async function main() {
       if (!orgId) {
         const [org] = await db
           .insert(schema.organizations)
-          .values({ name: info.name, rut: info.rut })
+          .values({ name: info.name, rut: info.rut, enterpriseId: mb.id })
           .returning();
         orgId = org.id;
         orgByRut.set(info.rut, orgId);

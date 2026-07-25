@@ -1,4 +1,4 @@
-# Instrucciones del Workspace — ImpactaREP
+# Instrucciones del Workspace — OptimizaREP
 
 ## ¿Qué es este proyecto?
 
@@ -12,7 +12,7 @@ Desarrollado por PYBOT SPA. Desplegado en Contabo + Dokploy (self-hosted).
 ## Estructura del Workspace
 
 ```
-impactarep/
+optimizarep/
 ├── .agents/rules/        → Reglas del agente (contexto, estándares, workflow, arquitectura)
 ├── .gemini/              → Este archivo de instrucciones
 ├── docs/                 → Documentación técnica
@@ -63,7 +63,7 @@ impactarep/
 
 ## Reglas importantes para este workspace
 
-1. **Consulta `.agents/rules/impactarep-project.md`** para contexto completo del proyecto.
+1. **Consulta `.agents/rules/optimizarep-project.md`** para contexto completo del proyecto.
 2. **Consulta `.agents/rules/coding-standards.md`** antes de escribir código.
 3. **Consulta `.agents/rules/workflow.md`** para el flujo de desarrollo.
 4. **Consulta `.agents/rules/architecture.md`** para entender la infra y multi-tenancy.

@@ -2,7 +2,7 @@
 trigger: always_on
 ---
 
-# Arquitectura — ImpactaREP
+# Arquitectura — OptimizaREP
 
 ## Diagrama de Infraestructura
 

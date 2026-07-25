@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════
--- Seed ImpactaREP — Datos del Excel BBDD RAEE_LEY REP (20.920)
+-- Seed OptimizaREP — Datos del Excel BBDD RAEE_LEY REP (20.920)
 -- Fuente: Hojas "📦 Inventario AEE", "📊 Resultados RETC", "📚 Listas"
 -- ═══════════════════════════════════════════════════════════════
 

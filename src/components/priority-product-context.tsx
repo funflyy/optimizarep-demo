@@ -31,7 +31,7 @@ interface PriorityProductContextValue {
   clear: () => void;
 }
 
-const STORAGE_KEY = "impactarep.priorityProduct";
+const STORAGE_KEY = "optimizarep.priorityProduct";
 
 const PriorityProductContext = createContext<PriorityProductContextValue>({
   selected: null,

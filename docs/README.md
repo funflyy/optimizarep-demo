@@ -1,4 +1,4 @@
-# ImpactaREP — Plataforma de Gestión de Residuos & Ley REP
+# OptimizaREP — Plataforma de Gestión de Residuos & Ley REP
 
 ## Descripción
 

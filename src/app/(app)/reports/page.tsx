@@ -156,7 +156,7 @@ export default function ReportsPage() {
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "BBDD");
-    XLSX.writeFile(wb, "BBDD_Productos_ImpactaREP.xlsx");
+    XLSX.writeFile(wb, "BBDD_Productos_OptimizaREP.xlsx");
     setExporting(null);
     setExported("bbdd");
     setTimeout(() => setExported(null), 3000);
@@ -182,7 +182,7 @@ export default function ReportsPage() {
     doc.rect(0, 0, pageW, 40, "F");
     doc.setTextColor(255, 255, 255);
     doc.setFontSize(28);
-    doc.text("ImpactaREP — Reporte Ejecutivo", 14, 22);
+    doc.text("OptimizaREP — Reporte Ejecutivo", 14, 22);
     doc.setFontSize(12);
     doc.text(`Generado: ${dateStr}`, 14, 33);
     doc.setTextColor(0, 0, 0);
@@ -311,14 +311,14 @@ export default function ReportsPage() {
       doc.setFontSize(8);
       doc.setTextColor(150);
       doc.text(
-        `ImpactaREP — Reporte Ejecutivo | ${dateStr} | Página ${i} de ${totalPages}`,
+        `OptimizaREP — Reporte Ejecutivo | ${dateStr} | Página ${i} de ${totalPages}`,
         pageW / 2,
         pageH - 8,
         { align: "center" }
       );
     }
 
-    doc.save("Reporte_Ejecutivo_ImpactaREP.pdf");
+    doc.save("Reporte_Ejecutivo_OptimizaREP.pdf");
     setExporting(null);
     setExported("pdf");
     setTimeout(() => setExported(null), 3000);

@@ -32,7 +32,7 @@ export default function DashboardLayout({
             <Breadcrumb>
               <BreadcrumbList>
                 <BreadcrumbItem>
-                  <BreadcrumbPage>ImpactaREP</BreadcrumbPage>
+                  <BreadcrumbPage>OptimizaREP</BreadcrumbPage>
                 </BreadcrumbItem>
               </BreadcrumbList>
             </Breadcrumb>

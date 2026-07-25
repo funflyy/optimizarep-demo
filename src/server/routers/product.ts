@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { createTRPCRouter, orgProcedure } from "@/server/trpc";
 import {
   products,
@@ -149,12 +150,19 @@ export const productRouter = createTRPCRouter({
       const { pieces, unitsSold, salesYear, priorityProductCode, ...productData } =
         input;
 
-      // Sin org activa (desarrollo): asignar a la primera organización
+      // Superadmin sin org activa: requiere orgId explícito en el input
       let orgId = ctx.orgDbId;
       if (!orgId) {
-        const [firstOrg] = await ctx.db.query.organizations.findMany({ limit: 1 });
-        if (!firstOrg) throw new Error("No existe ninguna organización");
-        orgId = firstOrg.id;
+        if (ctx.isSuperAdmin) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Superadmin: pasar orgId explícito",
+          });
+        }
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Sin organización activa",
+        });
       }
 
       const { priorityProductId, productType, salesUnit } =

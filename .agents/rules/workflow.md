@@ -1,8 +1,8 @@
-# Flujo de Trabajo — ImpactaREP
+# Flujo de Trabajo — OptimizaREP
 
 ## Antes de implementar cualquier tarea
 
-1. **Consultar `ImpactaREP-recy-project.md`**: Entender contexto, módulos, modelo de datos, glosario REP.
+1. **Consultar `optimizarep-recy-project.md`**: Entender contexto, módulos, modelo de datos, glosario REP.
 2. **Consultar `coding-standards.md`**: Seguir convenciones de TypeScript, tRPC, Drizzle.
 3. **Consultar `architecture.md`**: Entender la infra (Contabo + Dokploy + PostgreSQL).
 4. **Clarificar si hay ambigüedad**: Preguntar antes de asumir.

@@ -14,4 +14,4 @@ export function legacyProductType(
 }
 
 /** Cookie que replica la selección para componentes de servidor */
-export const PRIORITY_PRODUCT_COOKIE = "impactarep_pp";
+export const PRIORITY_PRODUCT_COOKIE = "optimizarep_pp";
