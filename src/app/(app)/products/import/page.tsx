@@ -10,6 +10,14 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -41,6 +49,7 @@ export default function ImportPage() {
   const [parsed, setParsed] = useState<ParsedProduct[]>([]);
   const [parseError, setParseError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const [orgId, setOrgId] = useState<string>("");
   const [importResult, setImportResult] = useState<{
     success: number;
     failed: number;
@@ -48,6 +57,14 @@ export default function ImportPage() {
   } | null>(null);
 
   const createMutation = trpc.product.create.useMutation();
+  const { data: me } = trpc.auth.me.useQuery();
+  const { data: orgs } = trpc.auth.writableOrgs.useQuery();
+
+  // La organización destino: la elegida, o la propia del usuario. Un
+  // superadmin sin organización asignada debe elegir una explícitamente.
+  const targetOrgId = orgId || me?.orgId || "";
+  const mustChooseOrg = !!orgs && orgs.length > 1;
+  const noOrgAvailable = !!orgs && orgs.length === 0;
 
   const handleFile = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -93,6 +110,7 @@ export default function ImportPage() {
       }
       try {
         await createMutation.mutateAsync({
+          organizationId: targetOrgId || undefined,
           sku: prod.sku,
           name: prod.name,
           brand: prod.brand || undefined,
@@ -155,7 +173,36 @@ export default function ImportPage() {
             cabeceras no importan.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          {/* Organización destino — solo si el usuario puede elegir */}
+          {mustChooseOrg && (
+            <div className="space-y-2">
+              <Label htmlFor="org">Organización destino</Label>
+              <Select value={targetOrgId} onValueChange={setOrgId}>
+                <SelectTrigger id="org" className="w-full sm:w-96">
+                  <SelectValue placeholder="Elegir organización…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {orgs?.map((o) => (
+                    <SelectItem key={o.id} value={o.id}>
+                      {o.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Los productos se cargarán en esta organización.
+              </p>
+            </div>
+          )}
+
+          {noOrgAvailable && (
+            <p className="text-sm text-destructive">
+              No tienes ninguna organización asignada. Contacta al
+              administrador antes de importar.
+            </p>
+          )}
+
           <div className="flex items-center gap-4">
             <label className="flex-1 cursor-pointer">
               <input
@@ -198,17 +245,24 @@ export default function ImportPage() {
                 </CardDescription>
               </div>
               {!importResult && (
-                <Button
-                  onClick={handleImport}
-                  disabled={importing || validCount === 0}
-                >
-                  {importing ? (
-                    <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <UploadIcon className="mr-2 h-4 w-4" />
+                <div className="flex flex-col items-end gap-1">
+                  <Button
+                    onClick={handleImport}
+                    disabled={importing || validCount === 0 || !targetOrgId}
+                  >
+                    {importing ? (
+                      <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <UploadIcon className="mr-2 h-4 w-4" />
+                    )}
+                    Importar {validCount} productos
+                  </Button>
+                  {!targetOrgId && (
+                    <span className="text-xs text-muted-foreground">
+                      Elige la organización destino
+                    </span>
                   )}
-                  Importar {validCount} productos
-                </Button>
+                </div>
               )}
             </div>
           </CardHeader>

@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { TRPCError } from "@trpc/server";
 import { createTRPCRouter, orgProcedure } from "@/server/trpc";
+import { resolveTargetOrg } from "@/server/authz";
 import {
   products,
   productPieces,
@@ -30,6 +30,12 @@ const pieceSchema = z.object({
 
 /** Validación de producto completo */
 const productInputSchema = z.object({
+  /**
+   * Organización destino. Solo la pueden usar superadmin (cualquiera) y
+   * enterprise_admin (las de su enterprise); el resto escribe en la propia.
+   * Si se omite, se usa la organización del usuario.
+   */
+  organizationId: z.string().uuid().optional(),
   sku: z.string().min(1, "SKU requerido"),
   name: z.string().min(1, "Nombre requerido"),
   brand: z.string().optional(),
@@ -166,23 +172,12 @@ export const productRouter = createTRPCRouter({
         salesYear,
         sales,
         priorityProductCode,
+        organizationId,
         ...productData
       } = input;
 
-      // Superadmin sin org activa: requiere orgId explícito en el input
-      const orgId = ctx.orgDbId;
-      if (!orgId) {
-        if (ctx.isSuperAdmin) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "Superadmin: pasar orgId explícito",
-          });
-        }
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Sin organización activa",
-        });
-      }
+      // Valida el permiso sobre la org destino (misma regla que writableOrgs)
+      const orgId = await resolveTargetOrg(ctx.db, ctx, organizationId);
 
       const { priorityProductId, productType, salesUnit } =
         await resolvePriorityProduct(ctx.db, priorityProductCode);
@@ -245,6 +240,9 @@ export const productRouter = createTRPCRouter({
         salesYear,
         sales,
         priorityProductCode,
+        // No se permite mover un producto de organización desde aquí; el
+        // ownership se valida con ctx.orgDbId en el WHERE de abajo.
+        organizationId: _organizationId,
         ...productData
       } = input.data;
 
