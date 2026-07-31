@@ -10,7 +10,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   Table,
   TableBody,
@@ -24,42 +23,28 @@ import {
   FileSpreadsheetIcon,
   CheckCircleIcon,
   AlertCircleIcon,
+  AlertTriangleIcon,
   ArrowLeftIcon,
   Loader2Icon,
 } from "lucide-react";
 import Link from "next/link";
-import { parseDecimal } from "@/lib/number";
+import {
+  isImportable,
+  parseProductsSheet,
+  type ParsedProduct,
+} from "@/lib/parse-products-sheet";
 import { trpc } from "@/lib/trpc";
-
-interface ParsedProduct {
-  sku: string;
-  name: string;
-  brand: string;
-  category: string;
-  pieces: {
-    pieceName: string;
-    packagingType: "primary" | "secondary" | "tertiary";
-    isDomiciliary: boolean;
-    materialClass: string;
-    wasteType: "recyclable" | "non_recyclable";
-    materialDetail: string;
-    weightGrams: number;
-    hasGrease: boolean;
-    isHazardous: boolean;
-  }[];
-  unitsSold?: number;
-  salesYear?: number;
-  errors: string[];
-}
 
 export default function ImportPage() {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
   const [parsed, setParsed] = useState<ParsedProduct[]>([]);
+  const [parseError, setParseError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<{
     success: number;
     failed: number;
+    failures: string[];
   } | null>(null);
 
   const createMutation = trpc.product.create.useMutation();
@@ -70,81 +55,27 @@ export default function ImportPage() {
       if (!f) return;
       setFile(f);
       setParsed([]);
+      setParseError(null);
       setImportResult(null);
 
-      // Parse Excel client-side
-      const XLSX = await import("xlsx");
-      const buf = await f.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array" });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws);
+      try {
+        const XLSX = await import("xlsx");
+        const buf = await f.arrayBuffer();
+        const wb = XLSX.read(buf, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws);
 
-      // Map rows to products
-      // Expected columns: SKU, Producto, Marca, Categoría, Pieza, TipoEnvase,
-      // Domiciliario, Material, DetalleMaterial, Peso(g), TipoResiduo, Grasa,
-      // Peligroso, Ventas, AñoVentas
-      const productMap = new Map<string, ParsedProduct>();
-
-      for (const row of rows) {
-        const sku = String(row["SKU"] || "").trim();
-        if (!sku) continue;
-
-        if (!productMap.has(sku)) {
-          productMap.set(sku, {
-            sku,
-            name: String(row["Producto"] || row["Nombre"] || "").trim(),
-            brand: String(row["Marca"] || "").trim(),
-            category: String(row["Categoría"] || row["Categoria"] || "").trim(),
-            pieces: [],
-            unitsSold: row["Ventas"] ? Math.round(parseDecimal(row["Ventas"])) : undefined,
-            salesYear: row["AñoVentas"] || row["Año"]
-              ? Number(row["AñoVentas"] || row["Año"])
-              : 2024,
-            errors: [],
-          });
+        if (rows.length === 0) {
+          setParseError("La primera hoja del archivo no tiene filas de datos.");
+          return;
         }
 
-        const prod = productMap.get(sku)!;
-        const pieceName = String(row["Pieza"] || row["Componente"] || "Envase").trim();
-        const weight = parseDecimal(row["Peso(g)"] || row["Peso"] || 0);
-
-        if (weight <= 0) {
-          prod.errors.push(`Pieza "${pieceName}" sin peso válido`);
-        }
-
-        const packagingRaw = String(row["TipoEnvase"] || "Primario").toLowerCase();
-        const packagingType = packagingRaw.includes("secund")
-          ? "secondary"
-          : packagingRaw.includes("terci")
-            ? "tertiary"
-            : "primary";
-
-        const domRaw = row["Domiciliario"];
-        const isDomiciliary =
-          domRaw === undefined ||
-          domRaw === true ||
-          String(domRaw).toLowerCase() === "sí" ||
-          String(domRaw).toLowerCase() === "si" ||
-          String(domRaw) === "1";
-
-        const wasteRaw = String(row["TipoResiduo"] || "Reciclable").toLowerCase();
-        const wasteType = wasteRaw.includes("no") ? "non_recyclable" : "recyclable";
-
-        prod.pieces.push({
-          pieceName,
-          packagingType,
-          isDomiciliary,
-          materialClass: String(row["Material"] || "Plástico").trim(),
-          wasteType,
-          materialDetail: String(row["DetalleMaterial"] || row["Subcategoría"] || "Otros").trim(),
-          weightGrams: weight || 1,
-          hasGrease: String(row["Grasa"] || "").toLowerCase() === "sí" || row["Grasa"] === true,
-          isHazardous:
-            String(row["Peligroso"] || "").toLowerCase() === "sí" || row["Peligroso"] === true,
-        });
+        setParsed(parseProductsSheet(rows));
+      } catch (err) {
+        setParseError(
+          err instanceof Error ? err.message : "No se pudo leer el archivo."
+        );
       }
-
-      setParsed(Array.from(productMap.values()));
     },
     []
   );
@@ -153,9 +84,10 @@ export default function ImportPage() {
     setImporting(true);
     let success = 0;
     let failed = 0;
+    const failures: string[] = [];
 
     for (const prod of parsed) {
-      if (prod.errors.length > 0 || prod.pieces.length === 0) {
+      if (!isImportable(prod)) {
         failed++;
         continue;
       }
@@ -166,22 +98,28 @@ export default function ImportPage() {
           brand: prod.brand || undefined,
           category: prod.category || undefined,
           pieces: prod.pieces,
-          unitsSold: prod.unitsSold,
-          salesYear: prod.salesYear,
+          sales: prod.sales,
         });
         success++;
-      } catch {
+      } catch (err) {
         failed++;
+        // Antes el error se descartaba en silencio: la importación reportaba
+        // "fallidos" sin ninguna pista de la causa.
+        failures.push(
+          `${prod.sku}: ${err instanceof Error ? err.message : String(err)}`
+        );
       }
     }
 
-    setImportResult({ success, failed });
+    setImportResult({ success, failed, failures });
     setImporting(false);
   }
 
-  const validCount = parsed.filter(
-    (p) => p.errors.length === 0 && p.pieces.length > 0
-  ).length;
+  const validCount = parsed.filter(isImportable).length;
+  const warningCount = parsed.filter((p) => p.warnings.length > 0).length;
+  const issues = parsed.filter(
+    (p) => p.errors.length > 0 || p.warnings.length > 0
+  );
 
   return (
     <div className="space-y-6">
@@ -210,8 +148,11 @@ export default function ImportPage() {
             Cargar Archivo
           </CardTitle>
           <CardDescription>
-            Columnas esperadas: SKU, Producto, Marca, Categoría, Pieza,
-            TipoEnvase, Material, DetalleMaterial, Peso(g), TipoResiduo, Ventas
+            Columnas reconocidas: SKU, Producto, Marca, Departamento, Categoría
+            REP (DOM / NO DOM), Subcategoría REP, Pieza, Tipo de Envase,
+            Material, Detalle Material, Peso (g), Tipo de Residuo, Peligroso,
+            Año, Mes, Ventas. Los espacios, acentos y mayúsculas de las
+            cabeceras no importan.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -237,6 +178,10 @@ export default function ImportPage() {
               </div>
             </label>
           </div>
+
+          {parseError && (
+            <p className="mt-4 text-sm text-destructive">{parseError}</p>
+          )}
         </CardContent>
       </Card>
 
@@ -246,12 +191,10 @@ export default function ImportPage() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle>
-                  Vista Previa ({parsed.length} productos)
-                </CardTitle>
+                <CardTitle>Vista Previa ({parsed.length} productos)</CardTitle>
                 <CardDescription>
-                  {validCount} válidos ·{" "}
-                  {parsed.length - validCount} con errores
+                  {validCount} válidos · {parsed.length - validCount} con errores
+                  {warningCount > 0 && ` · ${warningCount} con avisos`}
                 </CardDescription>
               </div>
               {!importResult && (
@@ -269,20 +212,29 @@ export default function ImportPage() {
               )}
             </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
             {importResult && (
-              <div className="mb-4 rounded-lg border bg-emerald-50 dark:bg-emerald-950/30 p-4">
-                <p className="text-sm font-medium text-emerald-800 dark:text-emerald-200">
-                  ✅ Importación completada: {importResult.success} exitosos,{" "}
+              <div className="rounded-lg border bg-muted/40 p-4">
+                <p className="text-sm font-medium">
+                  Importación completada: {importResult.success} exitosos,{" "}
                   {importResult.failed} fallidos
                 </p>
-                <Button
-                  variant="link"
-                  className="mt-1 p-0 h-auto"
-                  onClick={() => router.push("/products")}
-                >
-                  Ver productos →
-                </Button>
+                {importResult.failures.length > 0 && (
+                  <ul className="mt-2 space-y-1 text-xs text-destructive">
+                    {importResult.failures.map((f) => (
+                      <li key={f}>{f}</li>
+                    ))}
+                  </ul>
+                )}
+                {importResult.success > 0 && (
+                  <Button
+                    variant="link"
+                    className="mt-1 p-0 h-auto"
+                    onClick={() => router.push("/products")}
+                  >
+                    Ver productos →
+                  </Button>
+                )}
               </div>
             )}
 
@@ -295,41 +247,90 @@ export default function ImportPage() {
                   <TableHead>Marca</TableHead>
                   <TableHead className="text-center">Piezas</TableHead>
                   <TableHead className="text-right">Peso (g)</TableHead>
+                  <TableHead className="text-center">Períodos</TableHead>
                   <TableHead className="text-right">Ventas</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {parsed.map((p) => (
-                  <TableRow key={p.sku}>
-                    <TableCell>
-                      {p.errors.length > 0 ? (
-                        <AlertCircleIcon className="h-4 w-4 text-amber-500" />
-                      ) : (
-                        <CheckCircleIcon className="h-4 w-4 text-emerald-500" />
-                      )}
-                    </TableCell>
-                    <TableCell className="font-mono text-sm">
-                      {p.sku}
-                    </TableCell>
-                    <TableCell className="max-w-[200px] truncate">
-                      {p.name}
-                    </TableCell>
-                    <TableCell>{p.brand || "—"}</TableCell>
-                    <TableCell className="text-center">
-                      {p.pieces.length}
-                    </TableCell>
-                    <TableCell className="text-right font-mono">
-                      {p.pieces
-                        .reduce((a, pc) => a + pc.weightGrams, 0)
-                        .toFixed(1)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono">
-                      {p.unitsSold?.toLocaleString("es-CL") || "—"}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {parsed.map((p) => {
+                  const totalUnits = p.sales.reduce(
+                    (a, s) => a + s.unitsSold,
+                    0
+                  );
+                  return (
+                    <TableRow key={p.sku}>
+                      <TableCell>
+                        {p.errors.length > 0 ? (
+                          <span
+                            className="inline-flex"
+                            title={p.errors.join(" · ")}
+                          >
+                            <AlertCircleIcon className="h-4 w-4 text-destructive" />
+                          </span>
+                        ) : p.warnings.length > 0 ? (
+                          <span
+                            className="inline-flex"
+                            title={p.warnings.join(" · ")}
+                          >
+                            <AlertTriangleIcon className="h-4 w-4 text-amber-500" />
+                          </span>
+                        ) : (
+                          <CheckCircleIcon className="h-4 w-4 text-emerald-500" />
+                        )}
+                      </TableCell>
+                      <TableCell className="font-mono text-sm">
+                        {p.sku}
+                      </TableCell>
+                      <TableCell className="max-w-[200px] truncate">
+                        {p.name}
+                      </TableCell>
+                      <TableCell>{p.brand || "—"}</TableCell>
+                      <TableCell className="text-center">
+                        {p.pieces.length}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {p.pieces
+                          .reduce((a, pc) => a + pc.weightGrams, 0)
+                          .toFixed(1)}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {p.sales.length}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {totalUnits > 0
+                          ? totalUnits.toLocaleString("es-CL")
+                          : "—"}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
+
+            {issues.length > 0 && (
+              <div className="rounded-lg border p-4">
+                <p className="text-sm font-medium">
+                  Detalle de errores y avisos
+                </p>
+                <ul className="mt-2 space-y-1 text-xs">
+                  {issues.map((p) => (
+                    <li key={p.sku}>
+                      <span className="font-mono">{p.sku}</span>
+                      {p.errors.map((m) => (
+                        <span key={m} className="ml-2 text-destructive">
+                          ✕ {m}
+                        </span>
+                      ))}
+                      {p.warnings.map((m) => (
+                        <span key={m} className="ml-2 text-amber-600">
+                          ⚠ {m}
+                        </span>
+                      ))}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

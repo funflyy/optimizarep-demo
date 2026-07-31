@@ -18,19 +18,23 @@ export default async function AdminPage() {
   const { userId } = await auth();
   if (!userId) redirect("/sign-in");
 
-  const u = await db
-    .select({ role: users.role })
+  const [me] = await db
+    .select({ role: users.role, isSuperAdmin: users.isSuperAdmin })
     .from(users)
     .where(eq(users.clerkUserId, userId))
     .limit(1);
 
-  if (u.length === 0 && process.env.NODE_ENV !== "production") {
-    await db.insert(users).values({
-      clerkUserId: userId,
-      email: userId,
-      role: "admin",
-    });
-  } else if (u[0]?.role !== "admin") {
+  // El user debe estar pre-registrado; no se auto-crea (ver
+  // scripts/create-user.ts). Antes se insertaba con role "admin" cuando
+  // NODE_ENV !== "production", lo que convertía en admin a cualquiera que
+  // abriera esta página — el mismo agujero que se cerró en 99dac2b.
+  // Mismos permisos que adminProcedure.
+  const canAdmin =
+    me?.isSuperAdmin === true ||
+    me?.role === "admin" ||
+    me?.role === "enterprise_admin";
+
+  if (!canAdmin) {
     return <p className="p-8 text-muted-foreground">Se requiere rol admin.</p>;
   }
 

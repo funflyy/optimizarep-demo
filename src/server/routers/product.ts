@@ -42,6 +42,19 @@ const productInputSchema = z.object({
   pieces: z.array(pieceSchema).min(1, "Al menos 1 pieza requerida"),
   unitsSold: z.number().int().nonnegative().optional(),
   salesYear: z.number().int().min(2019).max(2030).optional(),
+  /**
+   * Ventas por período. Alternativa a unitsSold + salesYear para cargas que
+   * traen varios meses (month: 0 = anual, 1-12 = mensual).
+   */
+  sales: z
+    .array(
+      z.object({
+        year: z.number().int().min(2019).max(2030),
+        month: z.number().int().min(0).max(12).default(0),
+        unitsSold: z.number().int().nonnegative(),
+      })
+    )
+    .optional(),
 });
 
 /** Resuelve código de producto prioritario → { id, productType enum } */
@@ -147,11 +160,17 @@ export const productRouter = createTRPCRouter({
   create: orgProcedure
     .input(productInputSchema)
     .mutation(async ({ ctx, input }) => {
-      const { pieces, unitsSold, salesYear, priorityProductCode, ...productData } =
-        input;
+      const {
+        pieces,
+        unitsSold,
+        salesYear,
+        sales,
+        priorityProductCode,
+        ...productData
+      } = input;
 
       // Superadmin sin org activa: requiere orgId explícito en el input
-      let orgId = ctx.orgDbId;
+      const orgId = ctx.orgDbId;
       if (!orgId) {
         if (ctx.isSuperAdmin) {
           throw new TRPCError({
@@ -185,7 +204,20 @@ export const productRouter = createTRPCRouter({
           );
         }
 
-        if (unitsSold !== undefined && salesYear) {
+        if (sales && sales.length > 0) {
+          await tx
+            .insert(salesRecords)
+            .values(
+              sales.map((s) => ({
+                productId: product.id,
+                year: s.year,
+                month: s.month,
+                unitsSold: s.unitsSold,
+                unit: salesUnit,
+              }))
+            )
+            .onConflictDoNothing();
+        } else if (unitsSold !== undefined && salesYear) {
           await tx.insert(salesRecords).values({
             productId: product.id,
             year: salesYear,
@@ -207,8 +239,14 @@ export const productRouter = createTRPCRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { pieces, unitsSold, salesYear, priorityProductCode, ...productData } =
-        input.data;
+      const {
+        pieces,
+        unitsSold,
+        salesYear,
+        sales,
+        priorityProductCode,
+        ...productData
+      } = input.data;
 
       const { priorityProductId, productType, salesUnit } =
         await resolvePriorityProduct(ctx.db, priorityProductCode);
@@ -245,8 +283,28 @@ export const productRouter = createTRPCRouter({
           );
         }
 
-        // Upsert ventas
-        if (unitsSold !== undefined && salesYear) {
+        // Upsert ventas — por período si vienen varios, si no el legacy anual
+        if (sales && sales.length > 0) {
+          for (const s of sales) {
+            await tx
+              .insert(salesRecords)
+              .values({
+                productId: input.id,
+                year: s.year,
+                month: s.month,
+                unitsSold: s.unitsSold,
+                unit: salesUnit,
+              })
+              .onConflictDoUpdate({
+                target: [
+                  salesRecords.productId,
+                  salesRecords.year,
+                  salesRecords.month,
+                ],
+                set: { unitsSold: s.unitsSold, updatedAt: new Date() },
+              });
+          }
+        } else if (unitsSold !== undefined && salesYear) {
           await tx
             .insert(salesRecords)
             .values({ productId: input.id, year: salesYear, unitsSold, unit: salesUnit })

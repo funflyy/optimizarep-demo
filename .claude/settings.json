@@ -18,7 +18,16 @@
       "PowerShell(pnpm add -D @next/env)",
       "PowerShell($env:PYTHONUTF8=1; python \"C:\\\\Users\\\\lucho\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--pybot-optimizarep\\\\f36fd566-09d6-489c-bdd6-98ca16df4db6\\\\scratchpad\\\\an.py\" \"C:\\\\Users\\\\lucho\\\\Documents\\\\pybot\\\\new_projects\\\\optimizarep_documentos\\\\reunion-11-jul\\\\MAESTRA BBDD REP_VF2.0.xlsx\" \"📋 Portada||🚗 NEU · Catálogo||🚗 NEU · Línea Base||🚗 NEU · Cumplimiento||📦 ENV · Catálogo||📦 ENV · Línea Base||📦 ENV · Cumplimiento\")",
       "PowerShell($env:PYTHONUTF8=1; python \"C:\\\\Users\\\\lucho\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--pybot-optimizarep\\\\f36fd566-09d6-489c-bdd6-98ca16df4db6\\\\scratchpad\\\\an.py\" \"C:\\\\Users\\\\lucho\\\\Documents\\\\pybot\\\\new_projects\\\\optimizarep_documentos\\\\reunion-11-jul\\\\MAESTRA BBDD REP_VF2.0.xlsx\" \"📦 ENV · Catálogo||📦 ENV · Línea Base||⚡ RAEE · Catálogo||⚡ RAEE · Línea Base||🛢️ ALU · Catálogo||🛢️ ALU · Línea Base||🔋 P+RAEE · Catálogo||🔋 P+RAEE · Línea Base\")",
-      "PowerShell($env:PYTHONUTF8=1; python \"C:\\\\Users\\\\lucho\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--pybot-optimizarep\\\\f36fd566-09d6-489c-bdd6-98ca16df4db6\\\\scratchpad\\\\an.py\" \"C:\\\\Users\\\\lucho\\\\Documents\\\\pybot\\\\new_projects\\\\optimizarep_documentos\\\\reunion-11-jul\\\\MAESTRA BBDD REP_VF2.0.xlsx\" \"🚗 NEU · Cumplimiento||📦 ENV · Cumplimiento||⚡ RAEE · Cumplimiento||🛢️ ALU · Cumplimiento||🔋 P+RAEE · Cumplimiento||📚 Listas REP\" raw)"
+      "PowerShell($env:PYTHONUTF8=1; python \"C:\\\\Users\\\\lucho\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--pybot-optimizarep\\\\f36fd566-09d6-489c-bdd6-98ca16df4db6\\\\scratchpad\\\\an.py\" \"C:\\\\Users\\\\lucho\\\\Documents\\\\pybot\\\\new_projects\\\\optimizarep_documentos\\\\reunion-11-jul\\\\MAESTRA BBDD REP_VF2.0.xlsx\" \"🚗 NEU · Cumplimiento||📦 ENV · Cumplimiento||⚡ RAEE · Cumplimiento||🛢️ ALU · Cumplimiento||🔋 P+RAEE · Cumplimiento||📚 Listas REP\" raw)",
+      "Bash(PGPASSWORD=npg_K3wcNgHTftZ9 PGHOST=ep-fragrant-bar-ac29uki9.sa-east-1.aws.neon.tech PGUSER=neondb_owner PGDATABASE=neondb \"C:/Program Files/PostgreSQL/16/bin/psql.exe\" -c \"INSERT INTO users \\(clerk_user_id, email, first_name, last_name, role, is_super_admin, is_active\\) VALUES \\('user_3GyuQAgWIrD2uDdZsyWu6nrTgXl', 'luis.droguett@pybot.cl', 'Luis', 'Droguett', 'admin', true, true\\) RETURNING id, email, role, is_super_admin;\")",
+      "Bash(mv \"c:/pybot/impactarep\" \"c:/pybot/optimizarep\")",
+      "Read(//c/pybot/**)",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\lucho\\\\AppData\\\\Local\\\\Temp\\\\find-pybot.ps1\")",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\lucho\\\\AppData\\\\Local\\\\Temp\\\\find-handles.ps1\")",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\lucho\\\\AppData\\\\Local\\\\Temp\\\\rename-folder.ps1\")"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\lucho\\AppData\\Local\\Temp"
     ]
   }
 }
