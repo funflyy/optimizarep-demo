@@ -1,4 +1,5 @@
 import { createTRPCRouter, userProcedure } from "@/server/trpc";
+import { listWritableOrgs } from "@/server/authz";
 
 /**
  * Router de auth — info del usuario actual.
@@ -15,5 +16,13 @@ export const authRouter = createTRPCRouter({
       enterpriseId: ctx.enterpriseId,
       orgId: ctx.orgDbId,
     };
+  }),
+
+  /**
+   * Organizaciones en las que puedo escribir — alimenta los selectores de
+   * organización. Misma regla que valida el servidor al escribir.
+   */
+  writableOrgs: userProcedure.query(async ({ ctx }) => {
+    return listWritableOrgs(ctx.db, ctx);
   }),
 });
