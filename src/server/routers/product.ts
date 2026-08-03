@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { createTRPCRouter, orgProcedure } from "@/server/trpc";
 import { resolveTargetOrg } from "@/server/authz";
 import {
@@ -7,7 +8,7 @@ import {
   salesRecords,
   productTypeEnum,
 } from "@/server/db/schema";
-import { eq, and, sql, asc } from "drizzle-orm";
+import { eq, and, sql, asc, inArray } from "drizzle-orm";
 
 /** Validación de una pieza/componente */
 const pieceSchema = z.object({
@@ -133,6 +134,35 @@ export const productRouter = createTRPCRouter({
       return { products: allProducts, page, limit };
     }),
 
+  /**
+   * SKUs que ya existen en la organización destino.
+   *
+   * La importación lo consulta antes de cargar: `(organizationId, sku)` es
+   * único, así que reimportar un archivo ya cargado fallaba en cada fila con un
+   * volcado de SQL. Con esto se distingue "nuevo" de "ya existe" y se ofrece
+   * actualizar en vez de reventar.
+   */
+  existing: orgProcedure
+    .input(
+      z.object({
+        skus: z.array(z.string().min(1)).max(5000),
+        organizationId: z.string().uuid().optional(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      if (input.skus.length === 0) return [];
+      const orgId = await resolveTargetOrg(ctx.db, ctx, input.organizationId);
+      return ctx.db
+        .select({ id: products.id, sku: products.sku })
+        .from(products)
+        .where(
+          and(
+            eq(products.organizationId, orgId),
+            inArray(products.sku, input.skus)
+          )
+        );
+    }),
+
   /** Obtener categorías únicas para filtro — filtrado por org */
   categories: orgProcedure.query(async ({ ctx }) => {
     const result = await ctx.db
@@ -240,11 +270,15 @@ export const productRouter = createTRPCRouter({
         salesYear,
         sales,
         priorityProductCode,
-        // No se permite mover un producto de organización desde aquí; el
-        // ownership se valida con ctx.orgDbId en el WHERE de abajo.
-        organizationId: _organizationId,
+        organizationId,
         ...productData
       } = input.data;
+
+      // Misma regla de permiso que en create. Antes el WHERE de abajo usaba
+      // solo ctx.orgDbId, así que un superadmin que actualizara un producto de
+      // otra organización no lo encontraba. `organizationId` acota la búsqueda,
+      // no mueve el producto: si no pertenece a esa org, no hay match.
+      const orgId = await resolveTargetOrg(ctx.db, ctx, organizationId);
 
       const { priorityProductId, productType, salesUnit } =
         await resolvePriorityProduct(ctx.db, priorityProductCode);
@@ -261,13 +295,16 @@ export const productRouter = createTRPCRouter({
           .where(
             and(
               eq(products.id, input.id),
-              ctx.orgDbId ? eq(products.organizationId, ctx.orgDbId) : undefined
+              eq(products.organizationId, orgId)
             )
           )
           .returning();
 
         if (!product) {
-          throw new Error("Producto no encontrado o no pertenece a tu organización");
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Producto no encontrado o no pertenece a esa organización",
+          });
         }
 
         // Reemplazar piezas (delete + insert)

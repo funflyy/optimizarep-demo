@@ -9,7 +9,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -51,12 +53,17 @@ export default function ImportPage() {
   const [importing, setImporting] = useState(false);
   const [orgId, setOrgId] = useState<string>("");
   const [importResult, setImportResult] = useState<{
-    success: number;
+    created: number;
+    updated: number;
+    skipped: number;
     failed: number;
     failures: string[];
   } | null>(null);
 
+  const [updateExisting, setUpdateExisting] = useState(false);
+
   const createMutation = trpc.product.create.useMutation();
+  const updateMutation = trpc.product.update.useMutation();
   const { data: me } = trpc.auth.me.useQuery();
   const { data: orgs } = trpc.auth.writableOrgs.useQuery();
 
@@ -65,6 +72,16 @@ export default function ImportPage() {
   const targetOrgId = orgId || me?.orgId || "";
   const mustChooseOrg = !!orgs && orgs.length > 1;
   const noOrgAvailable = !!orgs && orgs.length === 0;
+
+  // Qué SKUs del archivo ya están cargados en la organización destino.
+  const skusInFile = parsed.map((p) => p.sku);
+  const { data: alreadyLoaded } = trpc.product.existing.useQuery(
+    { skus: skusInFile, organizationId: targetOrgId || undefined },
+    { enabled: skusInFile.length > 0 && !!targetOrgId }
+  );
+  const existingIdBySku = new Map(
+    (alreadyLoaded ?? []).map((r) => [r.sku, r.id])
+  );
 
   const handleFile = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -99,7 +116,9 @@ export default function ImportPage() {
 
   async function handleImport() {
     setImporting(true);
-    let success = 0;
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
     let failed = 0;
     const failures: string[] = [];
 
@@ -108,17 +127,32 @@ export default function ImportPage() {
         failed++;
         continue;
       }
+
+      const payload = {
+        organizationId: targetOrgId || undefined,
+        sku: prod.sku,
+        name: prod.name,
+        brand: prod.brand || undefined,
+        category: prod.category || undefined,
+        pieces: prod.pieces,
+        sales: prod.sales,
+      };
+
+      const existingId = existingIdBySku.get(prod.sku);
       try {
-        await createMutation.mutateAsync({
-          organizationId: targetOrgId || undefined,
-          sku: prod.sku,
-          name: prod.name,
-          brand: prod.brand || undefined,
-          category: prod.category || undefined,
-          pieces: prod.pieces,
-          sales: prod.sales,
-        });
-        success++;
+        if (existingId) {
+          // (organizationId, sku) es único: reinsertar reventaría. Se
+          // actualiza solo si el usuario lo pidió; si no, se omite.
+          if (!updateExisting) {
+            skipped++;
+            continue;
+          }
+          await updateMutation.mutateAsync({ id: existingId, data: payload });
+          updated++;
+        } else {
+          await createMutation.mutateAsync(payload);
+          created++;
+        }
       } catch (err) {
         failed++;
         // Antes el error se descartaba en silencio: la importación reportaba
@@ -129,15 +163,19 @@ export default function ImportPage() {
       }
     }
 
-    setImportResult({ success, failed, failures });
+    setImportResult({ created, updated, skipped, failed, failures });
     setImporting(false);
   }
 
-  const validCount = parsed.filter(isImportable).length;
+  const importables = parsed.filter(isImportable);
+  const validCount = importables.length;
   const warningCount = parsed.filter((p) => p.warnings.length > 0).length;
   const issues = parsed.filter(
     (p) => p.errors.length > 0 || p.warnings.length > 0
   );
+  const dupCount = importables.filter((p) => existingIdBySku.has(p.sku)).length;
+  const newCount = validCount - dupCount;
+  const willImport = updateExisting ? validCount : newCount;
 
   return (
     <div className="space-y-6">
@@ -242,21 +280,33 @@ export default function ImportPage() {
                 <CardDescription>
                   {validCount} válidos · {parsed.length - validCount} con errores
                   {warningCount > 0 && ` · ${warningCount} con avisos`}
+                  {dupCount > 0 && ` · ${dupCount} ya cargados`}
                 </CardDescription>
               </div>
               {!importResult && (
-                <div className="flex flex-col items-end gap-1">
+                <div className="flex flex-col items-end gap-2">
                   <Button
                     onClick={handleImport}
-                    disabled={importing || validCount === 0 || !targetOrgId}
+                    disabled={importing || willImport === 0 || !targetOrgId}
                   >
                     {importing ? (
                       <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
                     ) : (
                       <UploadIcon className="mr-2 h-4 w-4" />
                     )}
-                    Importar {validCount} productos
+                    {updateExisting && dupCount > 0
+                      ? `Importar ${newCount} y actualizar ${dupCount}`
+                      : `Importar ${willImport} productos`}
                   </Button>
+                  {dupCount > 0 && (
+                    <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Checkbox
+                        checked={updateExisting}
+                        onCheckedChange={(v) => setUpdateExisting(v === true)}
+                      />
+                      Actualizar los {dupCount} que ya están cargados
+                    </label>
+                  )}
                   {!targetOrgId && (
                     <span className="text-xs text-muted-foreground">
                       Elige la organización destino
@@ -270,8 +320,13 @@ export default function ImportPage() {
             {importResult && (
               <div className="rounded-lg border bg-muted/40 p-4">
                 <p className="text-sm font-medium">
-                  Importación completada: {importResult.success} exitosos,{" "}
-                  {importResult.failed} fallidos
+                  Importación completada: {importResult.created} nuevos
+                  {importResult.updated > 0 &&
+                    `, ${importResult.updated} actualizados`}
+                  {importResult.skipped > 0 &&
+                    `, ${importResult.skipped} omitidos por ya existir`}
+                  {importResult.failed > 0 &&
+                    `, ${importResult.failed} con error`}
                 </p>
                 {importResult.failures.length > 0 && (
                   <ul className="mt-2 space-y-1 text-xs text-destructive">
@@ -280,7 +335,7 @@ export default function ImportPage() {
                     ))}
                   </ul>
                 )}
-                {importResult.success > 0 && (
+                {importResult.created + importResult.updated > 0 && (
                   <Button
                     variant="link"
                     className="mt-1 p-0 h-auto"
@@ -333,7 +388,14 @@ export default function ImportPage() {
                         )}
                       </TableCell>
                       <TableCell className="font-mono text-sm">
-                        {p.sku}
+                        <span className="flex items-center gap-2">
+                          {p.sku}
+                          {existingIdBySku.has(p.sku) && (
+                            <Badge variant="secondary" className="font-sans">
+                              ya existe
+                            </Badge>
+                          )}
+                        </span>
                       </TableCell>
                       <TableCell className="max-w-[200px] truncate">
                         {p.name}
