@@ -64,22 +64,27 @@ const productInputSchema = z.object({
     .optional(),
 });
 
+/**
+ * Sin código explícito se asume el mismo default que `products.productType`.
+ *
+ * Antes, sin código, `priorityProductId` quedaba en NULL. La importación de
+ * Excel no envía `priorityProductCode`, así que los 63 productos cargados
+ * tenían el enum correcto pero el FK vacío — y las pantallas que filtran por
+ * el FK (Mapeo de Materiales, Resumen Ejecutivo) mostraban 0 productos.
+ */
+const DEFAULT_PRIORITY_PRODUCT_CODE = "envases_embalajes";
+
 /** Resuelve código de producto prioritario → { id, productType enum } */
 async function resolvePriorityProduct(
   db: typeof import("@/server/db").db,
   code: string | undefined
 ) {
-  if (!code)
-    return {
-      priorityProductId: null,
-      productType: undefined,
-      salesUnit: "unidades",
-    };
+  const effectiveCode = code ?? DEFAULT_PRIORITY_PRODUCT_CODE;
   const pp = await db.query.priorityProducts.findFirst({
-    where: (p, { eq }) => eq(p.code, code),
+    where: (p, { eq }) => eq(p.code, effectiveCode),
   });
   const legacy: Record<string, string> = { pilas_aee: "pilas" };
-  const enumValue = (legacy[code] ?? code) as
+  const enumValue = (legacy[effectiveCode] ?? effectiveCode) as
     (typeof productTypeEnum.enumValues)[number];
   return {
     priorityProductId: pp?.id ?? null,
