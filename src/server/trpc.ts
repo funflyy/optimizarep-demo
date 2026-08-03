@@ -2,9 +2,10 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import { ZodError } from "zod";
 import { db } from "@/server/db";
-import { users, organizations, enterprises } from "@/server/db/schema";
+import { users, organizations } from "@/server/db/schema";
 import { eq } from "drizzle-orm";
 import { auth } from "@clerk/nextjs/server";
+import { toFriendlyError } from "@/server/db-errors";
 
 /**
  * Contexto tRPC — se crea por cada request.
@@ -34,12 +35,25 @@ const t = initTRPC.context<typeof createTRPCContext>().create({
 
 export const createTRPCRouter = t.router;
 export const createCallerFactory = t.createCallerFactory;
-export const publicProcedure = t.procedure;
+
+/**
+ * Convierte errores de Postgres en mensajes accionables antes de que salgan
+ * al cliente. Va en la base para que aplique a todo procedure.
+ */
+const withDbErrors = t.middleware(async ({ next }) => {
+  try {
+    return await next();
+  } catch (err) {
+    throw toFriendlyError(err);
+  }
+});
+
+export const publicProcedure = t.procedure.use(withDbErrors);
 
 /**
  * Procedure protegido — requiere userId de Clerk.
  */
-export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {
+export const protectedProcedure = publicProcedure.use(async ({ ctx, next }) => {
   if (!ctx.userId) throw new TRPCError({ code: "UNAUTHORIZED" });
   return next({ ctx: { ...ctx, userId: ctx.userId } });
 });
