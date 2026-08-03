@@ -73,6 +73,13 @@ export default function TariffsPage() {
   const [editingTariff, setEditingTariff] = useState<{ tariffId: string; categoryId: string } | null>(null);
   const [editRate, setEditRate] = useState("");
 
+  // Pestaña activa derivada: cae en la primera mientras la elegida no esté en
+  // la lista (al cargar, o al cambiar de producto prioritario)
+  const [tab, setTab] = useState("");
+  const activeTab = systems.some((s) => s.name === tab)
+    ? tab
+    : (systems[0]?.name ?? "");
+
   function openAdd(systemId: string) {
     setAddSystemId(systemId);
     setAddForm({ segment: "Domiciliario", material: "", subcategory: "", tariffType: "Normal", year: 2026, rate: "", rateUnit: "UF/ton", plusIva: false });
@@ -120,7 +127,19 @@ export default function TariffsPage() {
         </p>
       </div>
 
-      <Tabs defaultValue={systems[0]?.name || ""}>
+      {systems.length === 0 && (
+        <p className="text-sm text-muted-foreground">
+          No hay sistemas de gestión para este producto prioritario. Si acabas
+          de cambiarlo, vuelve a elegirlo en la barra lateral.
+        </p>
+      )}
+
+      {/*
+        Controlado, no `defaultValue`: Radix lee defaultValue solo al montar, y
+        los datos llegan después del primer render. Con defaultValue quedaba sin
+        pestaña seleccionada y no se veía ningún contenido.
+      */}
+      <Tabs value={activeTab} onValueChange={setTab}>
         <TabsList className="flex-wrap h-auto gap-1">
           {systems.map((sys) => (
             <TabsTrigger key={sys.id} value={sys.name} className="gap-1.5">
