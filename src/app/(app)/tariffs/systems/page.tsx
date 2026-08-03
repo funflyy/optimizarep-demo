@@ -1,6 +1,4 @@
 import { db } from "@/server/db";
-import { managementSystems, tariffCategories, tariffs } from "@/server/db/schema";
-import { count, eq } from "drizzle-orm";
 import {
   Card,
   CardContent,
@@ -8,19 +6,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ArrowLeftIcon, BuildingIcon, ExternalLinkIcon } from "lucide-react";
 import Link from "next/link";
 import { getActivePriorityProduct } from "@/lib/priority-product-server";
+import { SigSelector } from "./sig-selector";
 
 export default async function SystemsPage() {
   const pp = await getActivePriorityProduct();
@@ -51,6 +42,10 @@ export default async function SystemsPage() {
           </p>
         </div>
       </div>
+
+      {pp && (
+        <SigSelector priorityProductId={pp.id} priorityProductName={pp.name} />
+      )}
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         {systems.map((sys) => {

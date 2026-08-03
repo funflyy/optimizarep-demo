@@ -27,7 +27,7 @@ import {
   priorityProducts,
   productTypeEnum,
 } from "@/server/db/schema";
-import { eq, and, sql, asc, desc } from "drizzle-orm";
+import { eq, and, or, isNull, sql, asc, desc } from "drizzle-orm";
 
 // ── Types ────────────────────────────────────────────────────────
 interface CostRow {
@@ -146,6 +146,7 @@ async function getCostRows(
       salesYear: salesRecords.year,
       unitsSold: salesRecords.unitsSold,
       activeSystemId: organizationPriorityProducts.activeSystemId,
+      systemId: managementSystems.id,
       systemName: managementSystems.name,
       mappedRateUfPerTon: tariffs.rateUfPerTon,
       mappedRateValue: tariffs.rateValue,
@@ -170,15 +171,28 @@ async function getCostRows(
         )
       )
     )
+    // Modo fijo: solo el SIG que la organización declara.
+    // Modo libre (active_system_id NULL, o sin fila en
+    // organization_priority_products): todos los SIG del producto prioritario,
+    // para poder comparar cuánto costaría en cada uno.
     .leftJoin(
       managementSystems,
-      eq(managementSystems.id, organizationPriorityProducts.activeSystemId)
+      and(
+        eq(managementSystems.priorityProductId, products.priorityProductId),
+        eq(managementSystems.isActive, true),
+        or(
+          isNull(organizationPriorityProducts.activeSystemId),
+          eq(managementSystems.id, organizationPriorityProducts.activeSystemId)
+        )
+      )
     )
     .leftJoin(
       tariffMappings,
       and(
         eq(tariffMappings.organizationId, products.organizationId),
-        eq(tariffMappings.systemId, organizationPriorityProducts.activeSystemId),
+        // Por el SIG de esta fila, no por el activo: en modo libre hay una
+        // fila por SIG y cada una necesita su propio mapeo.
+        eq(tariffMappings.systemId, managementSystems.id),
         eq(tariffMappings.materialDetail, productPieces.materialDetail),
         eq(
           tariffMappings.segment,
@@ -216,8 +230,9 @@ async function getCostRows(
     // 1. mapeo manual → 2. tarifa única del SIG activo → 3. sin tarifa
     let rateValue = Number(r.mappedRateValue ?? r.mappedRateUfPerTon ?? 0);
     let rateUnit = r.mappedRateUnit ?? "UF/ton";
-    if (!rateValue && r.activeSystemId) {
-      const unique = uniqueTariffBySystem.get(r.activeSystemId)?.get(r.salesYear);
+    // Fallback por el SIG de la fila (en modo libre hay una por SIG)
+    if (!rateValue && r.systemId) {
+      const unique = uniqueTariffBySystem.get(r.systemId)?.get(r.salesYear);
       if (unique) {
         rateValue = unique.rateValue;
         rateUnit = unique.rateUnit;

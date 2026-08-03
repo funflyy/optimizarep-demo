@@ -1,9 +1,109 @@
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { createTRPCRouter, orgProcedure, adminProcedure } from "@/server/trpc";
-import { tariffMappings, tariffCategories, tariffs, managementSystems } from "@/server/db/schema";
-import { eq, and } from "drizzle-orm";
+import {
+  tariffMappings,
+  tariffCategories,
+  tariffs,
+  managementSystems,
+  organizationPriorityProducts,
+} from "@/server/db/schema";
+import { eq, and, asc } from "drizzle-orm";
 
 export const tariffRouter = createTRPCRouter({
+  /**
+   * Configuración de SIG de la organización para un producto prioritario.
+   *
+   * `activeSystemId` null (o sin fila) significa **libre**: la plataforma no
+   * fija un SIG y las pantallas calculan contra todos los del producto
+   * prioritario, para poder comparar.
+   */
+  sigConfig: orgProcedure
+    .input(z.object({ priorityProductId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const systems = await ctx.db
+        .select({
+          id: managementSystems.id,
+          name: managementSystems.name,
+        })
+        .from(managementSystems)
+        .where(
+          and(
+            eq(managementSystems.priorityProductId, input.priorityProductId),
+            eq(managementSystems.isActive, true)
+          )
+        )
+        .orderBy(asc(managementSystems.name));
+
+      if (!ctx.orgDbId) return { activeSystemId: null, systems };
+
+      const row = await ctx.db.query.organizationPriorityProducts.findFirst({
+        where: (o, { eq: _eq, and: _and }) =>
+          _and(
+            _eq(o.organizationId, ctx.orgDbId!),
+            _eq(o.priorityProductId, input.priorityProductId)
+          ),
+      });
+
+      return { activeSystemId: row?.activeSystemId ?? null, systems };
+    }),
+
+  /**
+   * Fija el SIG de la organización, o lo deja libre con systemId = null.
+   *
+   * En modo libre, `getCostRows` cruza cada pieza contra todos los SIG del
+   * producto prioritario en vez de uno solo.
+   */
+  setSig: adminProcedure
+    .input(
+      z.object({
+        priorityProductId: z.string().uuid(),
+        systemId: z.string().uuid().nullable(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (!ctx.orgDbId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Sin organización activa",
+        });
+      }
+
+      // El SIG debe pertenecer al producto prioritario que se está configurando
+      if (input.systemId) {
+        const sys = await ctx.db.query.managementSystems.findFirst({
+          where: eq(managementSystems.id, input.systemId),
+        });
+        if (!sys || sys.priorityProductId !== input.priorityProductId) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Ese SIG no corresponde al producto prioritario",
+          });
+        }
+      }
+
+      await ctx.db
+        .insert(organizationPriorityProducts)
+        .values({
+          organizationId: ctx.orgDbId,
+          priorityProductId: input.priorityProductId,
+          activeSystemId: input.systemId,
+        })
+        .onConflictDoUpdate({
+          target: [
+            organizationPriorityProducts.organizationId,
+            organizationPriorityProducts.priorityProductId,
+          ],
+          set: {
+            activeSystemId: input.systemId,
+            isActive: true,
+            updatedAt: new Date(),
+          },
+        });
+
+      return { activeSystemId: input.systemId };
+    }),
+
   /** Obtener todos los mapeos de la organización */
   getMappings: orgProcedure.query(async ({ ctx }) => {
     return ctx.db.query.tariffMappings.findMany({
