@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { trpc } from "@/lib/trpc";
 import { useProductType } from "@/hooks/use-product-type";
@@ -35,11 +35,28 @@ import {
  */
 type RiskLevel = "green" | "yellow" | "red";
 
+/**
+ * Dos cosas muy distintas se mostraban con el mismo semáforo:
+ *
+ * - `datos`: falta información para declarar. Eso sí puede ser crítico, porque
+ *   bloquea la declaración.
+ * - `costo`: características del envase que encarecen la tarifa (no reciclable,
+ *   con grasa, peligroso). No son incumplimientos: son datos normales del
+ *   catálogo que conviene mirar. Nunca pasan de "Atención".
+ *
+ * Antes los factores de costo se evaluaban por conteo absoluto con umbrales de
+ * 3 y 5 piezas, así que cualquier catálogo real quedaba en rojo: 107 piezas no
+ * reciclables se leían como "requiere acción inmediata" cuando es simplemente
+ * la composición de los envases.
+ */
+type RiskKind = "datos" | "costo";
+
 interface RiskItem {
   name: string;
   status: string;
   level: RiskLevel;
   detail: string;
+  kind: RiskKind;
 }
 
 function RiskBadge({ level }: { level: RiskLevel }) {
@@ -68,6 +85,35 @@ function RiskBadge({ level }: { level: RiskLevel }) {
   }
 }
 
+function RiskTable({ items }: { items: RiskItem[] }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Aspecto</TableHead>
+          <TableHead>Estado</TableHead>
+          <TableHead>Nivel</TableHead>
+          <TableHead className="hidden lg:table-cell">Detalle</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {items.map((risk) => (
+          <TableRow key={risk.name}>
+            <TableCell className="font-medium">{risk.name}</TableCell>
+            <TableCell>{risk.status}</TableCell>
+            <TableCell>
+              <RiskBadge level={risk.level} />
+            </TableCell>
+            <TableCell className="hidden lg:table-cell text-muted-foreground text-sm">
+              {risk.detail}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
 export default function RisksPage() {
   const productType = useProductType();
   const { data: products } = trpc.product.list.useQuery({
@@ -77,15 +123,12 @@ export default function RisksPage() {
   const { data: summary } = trpc.costs.summary.useQuery({
     productType: productType ?? undefined,
   });
-  const { data: filters } = trpc.costs.availableFilters.useQuery({
-    productType: productType ?? undefined,
-  });
 
   // ── Análisis de Riesgos ──
   const allProducts = products?.products ?? [];
   const totalProducts = allProducts.length;
   const productsWithSales = allProducts.filter(
-    (p: any) => p.salesRecords?.length > 0
+    (p) => p.salesRecords?.length > 0
   ).length;
   const productsWithoutSales = totalProducts - productsWithSales;
 
@@ -94,12 +137,18 @@ export default function RisksPage() {
   const skusWithoutCost = totalProducts - skusWithCost;
 
   // Piezas con materiales no reciclables
-  const allPieces = allProducts.flatMap((p: any) => p.pieces ?? []);
+  const allPieces = allProducts.flatMap((p) => p.pieces ?? []);
   const nonRecyclablePieces = allPieces.filter(
-    (p: any) => p.wasteType === "non_recyclable"
+    (p) => p.wasteType === "non_recyclable"
   );
-  const hazardousPieces = allPieces.filter((p: any) => p.isHazardous);
-  const greasePieces = allPieces.filter((p: any) => p.hasGrease);
+  const hazardousPieces = allPieces.filter((p) => p.isHazardous);
+  const greasePieces = allPieces.filter((p) => p.hasGrease);
+
+  /** Proporción sobre el total de piezas: un conteo suelto no dice nada */
+  const share = (n: number) =>
+    allPieces.length > 0
+      ? `${((n / allPieces.length) * 100).toFixed(1)}%`
+      : "—";
 
   // ── Construir semáforo ──
   const risks: RiskItem[] = [
@@ -116,6 +165,7 @@ export default function RisksPage() {
             ? "yellow"
             : "red",
       detail: `${productsWithSales}/${totalProducts} productos con ventas registradas. Los productos sin ventas no se incluirán en la declaración SINADER.`,
+      kind: "datos",
     },
     {
       name: "Mapeo de Tarifas",
@@ -130,6 +180,7 @@ export default function RisksPage() {
             ? "yellow"
             : "red",
       detail: `${skusWithCost}/${totalProducts} productos con mapeo de tarifas. Sin mapeo, no se puede calcular el costo REP.`,
+      kind: "datos",
     },
     {
       name: "Clasificación de Piezas",
@@ -139,43 +190,41 @@ export default function RisksPage() {
           : "Sin piezas registradas",
       level: allPieces.length > 0 ? "green" : "red",
       detail: `Cada pieza debe tener material, peso y tipo de residuo correctamente asignados.`,
+      kind: "datos",
     },
+    // ── Factores de costo: informativos, nunca críticos ──
     {
       name: "Materiales No Reciclables",
       status:
         nonRecyclablePieces.length === 0
           ? "Todos los materiales son reciclables"
-          : `${nonRecyclablePieces.length} piezas no reciclables`,
-      level:
-        nonRecyclablePieces.length === 0
-          ? "green"
-          : nonRecyclablePieces.length <= 5
-            ? "yellow"
-            : "red",
-      detail: `Las piezas no reciclables tienen tarifas más altas. Considera ecodiseño para reducir costos.`,
+          : `${nonRecyclablePieces.length} de ${allPieces.length} piezas (${share(nonRecyclablePieces.length)})`,
+      level: nonRecyclablePieces.length === 0 ? "green" : "yellow",
+      detail:
+        "No es un incumplimiento: encarece la tarifa. Es la palanca principal de ecodiseño para bajar el costo.",
+      kind: "costo",
     },
     {
       name: "Materiales Peligrosos",
       status:
         hazardousPieces.length === 0
           ? "Sin materiales peligrosos"
-          : `${hazardousPieces.length} piezas peligrosas`,
-      level: hazardousPieces.length === 0 ? "green" : "red",
-      detail: `Los materiales peligrosos requieren gestión especial y tienen las tarifas más altas.`,
+          : `${hazardousPieces.length} de ${allPieces.length} piezas (${share(hazardousPieces.length)})`,
+      level: hazardousPieces.length === 0 ? "green" : "yellow",
+      detail:
+        "Requieren gestión especial y tienen la tarifa más alta de cada SIG.",
+      kind: "costo",
     },
     {
       name: "Contaminación con Grasa",
       status:
         greasePieces.length === 0
           ? "Sin piezas con grasa"
-          : `${greasePieces.length} piezas con grasa`,
-      level:
-        greasePieces.length === 0
-          ? "green"
-          : greasePieces.length <= 3
-            ? "yellow"
-            : "red",
-      detail: `Las piezas con grasa se clasifican en categorías de tarifa más costosas.`,
+          : `${greasePieces.length} de ${allPieces.length} piezas (${share(greasePieces.length)})`,
+      level: greasePieces.length === 0 ? "green" : "yellow",
+      detail:
+        "Mueve la pieza a la categoría 'con grasa', más costosa. En ReSimple, PP pasa de 2,95 a 5,09 UF/ton.",
+      kind: "costo",
     },
   ];
 
@@ -213,7 +262,7 @@ export default function RisksPage() {
               {criticalCount}
             </div>
             <p className="text-xs text-muted-foreground">
-              Requieren acción inmediata
+              Bloquean la declaración
             </p>
           </CardContent>
         </Card>
@@ -236,7 +285,7 @@ export default function RisksPage() {
               {warningCount}
             </div>
             <p className="text-xs text-muted-foreground">
-              Riesgos menores, monitorear
+              Para revisar, no bloquean
             </p>
           </CardContent>
         </Card>
@@ -261,42 +310,36 @@ export default function RisksPage() {
         </Card>
       </div>
 
-      {/* Tabla detallada de riesgos */}
+      {/* Completitud de datos: lo que puede bloquear la declaración */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <ShieldAlertIcon className="h-5 w-5 text-amber-500" />
-            Semáforo de Cumplimiento
+            Completitud para declarar
           </CardTitle>
           <CardDescription>
-            Estado de cada aspecto requerido para la declaración REP
+            Datos que la declaración REP necesita. Lo que falte aquí sí bloquea.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Aspecto</TableHead>
-                <TableHead>Estado</TableHead>
-                <TableHead>Nivel</TableHead>
-                <TableHead className="hidden lg:table-cell">Detalle</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {risks.map((risk) => (
-                <TableRow key={risk.name}>
-                  <TableCell className="font-medium">{risk.name}</TableCell>
-                  <TableCell>{risk.status}</TableCell>
-                  <TableCell>
-                    <RiskBadge level={risk.level} />
-                  </TableCell>
-                  <TableCell className="hidden lg:table-cell text-muted-foreground text-sm">
-                    {risk.detail}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <RiskTable items={risks.filter((r) => r.kind === "datos")} />
+        </CardContent>
+      </Card>
+
+      {/* Factores de costo: información, no incumplimiento */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <PackageSearchIcon className="h-5 w-5 text-muted-foreground" />
+            Factores de costo del catálogo
+          </CardTitle>
+          <CardDescription>
+            Características de los envases que encarecen la tarifa. No son
+            incumplimientos: son las palancas de ecodiseño para bajar el costo.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <RiskTable items={risks.filter((r) => r.kind === "costo")} />
         </CardContent>
       </Card>
 
@@ -304,13 +347,16 @@ export default function RisksPage() {
       {nonRecyclablePieces.length > 0 && (
         <Card className="border-amber-500/20">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-amber-600">
-              <PackageSearchIcon className="h-5 w-5" />
-              SKUs Sin Clasificar ({nonRecyclablePieces.length} piezas)
+            {/* Estas piezas SÍ están clasificadas: como no reciclables. El
+                título anterior ("Sin Clasificar") daba a entender que faltaba
+                el dato, cuando lo que hay es un factor de costo. */}
+            <CardTitle className="flex items-center gap-2">
+              <PackageSearchIcon className="h-5 w-5 text-muted-foreground" />
+              Piezas no reciclables ({nonRecyclablePieces.length})
             </CardTitle>
             <CardDescription>
-              Piezas con clasificación de residuo &quot;no reciclable&quot; o datos
-              incompletos. Revisa en Configuración → Productos.
+              Están correctamente clasificadas; pagan la tarifa más alta de su
+              material. Ordenadas por impacto, son las candidatas a ecodiseño.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -321,21 +367,23 @@ export default function RisksPage() {
                   <TableHead>Producto</TableHead>
                   <TableHead>Marca</TableHead>
                   <TableHead>Material Declarado</TableHead>
-                  <TableHead>Clasificación Faltante</TableHead>
+                  <TableHead>Segmento</TableHead>
                   <TableHead className="text-right">Impacto Est. (UF)</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {allProducts
-                  .flatMap((p: any) =>
+                  .flatMap((p) =>
                     (p.pieces ?? [])
-                      .filter((pc: any) => pc.wasteType === "non_recyclable")
-                      .map((pc: any) => ({
+                      .filter((pc) => pc.wasteType === "non_recyclable")
+                      .map((pc) => ({
                         sku: p.sku,
                         productName: p.name,
                         brand: p.brand ?? "—",
                         material: pc.materialDetail,
-                        missing: pc.isDomiciliary ? "Domiciliario/No D." : "Tipo resina",
+                        missing: pc.isDomiciliary
+                          ? "Domiciliario"
+                          : "No Domiciliario",
                         // Impacto estimado: peso × ventas / 1M × tarifa promedio (~3 UF/ton)
                         impact: (() => {
                           const sales = p.salesRecords?.[0]?.unitsSold ?? 0;
@@ -344,9 +392,9 @@ export default function RisksPage() {
                         })(),
                       }))
                   )
-                  .sort((a: any, b: any) => b.impact - a.impact)
+                  .sort((a, b) => b.impact - a.impact)
                   .slice(0, 15)
-                  .map((row: any, i: number) => (
+                  .map((row, i) => (
                     <TableRow key={`${row.sku}-${i}`}>
                       <TableCell className="font-mono text-xs">
                         {row.sku}
