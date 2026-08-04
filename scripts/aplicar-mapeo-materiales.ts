@@ -75,6 +75,30 @@ const HOMOLOGACION: Record<
   // Madera: sin categoría equivalente en los SIG de envases. Se deja fuera.
 };
 
+/**
+ * ProREP clasifica por CLASE de material, no por detalle, y tiene una
+ * categoría aparte para lo no reciclable:
+ *
+ *   Papel y Cartón  0,17    Metales  0,21
+ *   Plásticos       0,27    No reciclables  0,64
+ *
+ * Por eso el cruce por nombre no encuentra nada: el catálogo tiene "PEAD" o
+ * "Tetra Pak" y ProREP espera "Plásticos". La regla acordada con MB es que la
+ * reciclabilidad manda sobre la clase: una pieza irreciclable va a "No
+ * reciclables" sin importar su material.
+ *
+ * `Cartón para líquidos` y `Otros` (madera) no tienen equivalente en ProREP y
+ * quedan sin mapear a propósito, para que el reporte muestre que su tonelaje
+ * no está cubierto en vez de inventarle una categoría.
+ */
+const PROREP_POR_CLASE: Record<string, string> = {
+  Plástico: "Plásticos",
+  Plásticos: "Plásticos",
+  Metal: "Metales",
+  Metales: "Metales",
+  "Papel y Cartón": "Papel y Cartón",
+};
+
 /** El material del SIG debe ser flexible o rígido según el detalle */
 function preferenciaMaterial(detalle: string): string | undefined {
   if (/flexible/i.test(detalle)) return "Plásticos Flexibles";
@@ -89,17 +113,22 @@ async function main() {
   const sql = postgres(DATABASE_URL!, { max: 1 });
   const db = drizzle(sql, { schema });
 
+  /** Claves cuya reciclabilidad hubo que decidir por mayoría */
+  const conflictos: string[] = [];
+
   // Combinaciones reales del catálogo, por organización
   const segmentExpr =
     sqlTag<string>`CASE WHEN ${schema.productPieces.isDomiciliary} THEN 'Domiciliario' ELSE 'No Domiciliario' END`;
 
-  const combos = await db
+  const combosRaw = await db
     .select({
       organizationId: schema.products.organizationId,
+      materialClass: schema.productPieces.materialClass,
       materialDetail: schema.productPieces.materialDetail,
       segment: segmentExpr,
       hasGrease: schema.productPieces.hasGrease,
       isHazardous: schema.productPieces.isHazardous,
+      wasteType: schema.productPieces.wasteType,
       piezas: count(),
     })
     .from(schema.productPieces)
@@ -109,11 +138,45 @@ async function main() {
     )
     .groupBy(
       schema.products.organizationId,
+      schema.productPieces.materialClass,
       schema.productPieces.materialDetail,
       segmentExpr,
       schema.productPieces.hasGrease,
-      schema.productPieces.isHazardous
+      schema.productPieces.isHazardous,
+      schema.productPieces.wasteType
     );
+
+  /**
+   * La clave de tariff_mappings no incluye la reciclabilidad, así que si una
+   * misma clave tiene piezas reciclables e irreciclables hay que elegir una.
+   * Se usa la mayoría y se reporta la excepción.
+   */
+  const porClave = new Map<string, typeof combosRaw>();
+  for (const c of combosRaw) {
+    const k = [
+      c.organizationId,
+      c.materialDetail,
+      c.segment,
+      c.hasGrease,
+      c.isHazardous,
+    ].join("|");
+    porClave.set(k, [...(porClave.get(k) ?? []), c]);
+  }
+
+  const combos = [...porClave.values()].map((grupo) => {
+    const dominante = grupo.reduce((a, b) => (b.piezas > a.piezas ? b : a));
+    const total = grupo.reduce((a, c) => a + Number(c.piezas), 0);
+    if (grupo.length > 1) {
+      const minoria = grupo.filter((c) => c !== dominante);
+      conflictos.push(
+        `${dominante.materialDetail} (${dominante.segment}): ${minoria
+          .map((m) => `${m.piezas} ${m.wasteType}`)
+          .join(", ")} tratadas como ${dominante.wasteType} ` +
+          `(la clave del mapeo no distingue reciclabilidad)`
+      );
+    }
+    return { ...dominante, piezas: total };
+  });
 
   const systems = await db.select().from(schema.managementSystems);
   const cats = await db.select().from(schema.tariffCategories);
@@ -124,18 +187,77 @@ async function main() {
 
   for (const c of combos) {
     const homo = HOMOLOGACION[c.materialDetail];
-    if (!homo) {
-      sinCategoria.push(
-        `${c.materialDetail} (${c.segment}) — sin homologación definida, ${c.piezas} piezas`
-      );
-      continue;
-    }
-    if (homo.nota) notas.add(`${c.materialDetail}: ${homo.nota}`);
-
-    const objetivo = c.hasGrease ? (homo.conGrasa ?? homo.sinGrasa) : homo.sinGrasa;
     const prefMaterial = preferenciaMaterial(c.materialDetail);
 
     for (const sys of systems) {
+      // ── ProREP: por clase de material, y lo irreciclable aparte ──
+      if (sys.name === "ProREP") {
+        const objetivoProrep =
+          c.wasteType === "non_recyclable"
+            ? "No reciclables"
+            : PROREP_POR_CLASE[c.materialClass];
+
+        if (!objetivoProrep) {
+          sinCategoria.push(
+            `ProREP · ${c.materialClass} / ${c.materialDetail} (${c.segment}) — ProREP no tiene esa clase, ${c.piezas} piezas`
+          );
+          continue;
+        }
+
+        const catProrep = cats.find(
+          (tc) =>
+            tc.systemId === sys.id &&
+            tc.segment === c.segment &&
+            tc.subcategory === objetivoProrep
+        );
+        if (!catProrep) {
+          sinCategoria.push(
+            `ProREP · ${objetivoProrep} en ${c.segment} — ProREP solo cubre Domiciliario, ${c.piezas} piezas`
+          );
+          continue;
+        }
+
+        if (!dry) {
+          await db
+            .insert(schema.tariffMappings)
+            .values({
+              organizationId: c.organizationId,
+              systemId: sys.id,
+              materialDetail: c.materialDetail,
+              segment: c.segment,
+              hasGrease: c.hasGrease,
+              isHazardous: c.isHazardous,
+              tariffCategoryId: catProrep.id,
+              isManual: false,
+            })
+            .onConflictDoUpdate({
+              target: [
+                schema.tariffMappings.organizationId,
+                schema.tariffMappings.systemId,
+                schema.tariffMappings.materialDetail,
+                schema.tariffMappings.segment,
+                schema.tariffMappings.hasGrease,
+                schema.tariffMappings.isHazardous,
+              ],
+              set: { tariffCategoryId: catProrep.id, updatedAt: new Date() },
+            });
+        }
+        guardados++;
+        continue;
+      }
+
+      // ── ReSimple y Giro: por detalle de material ──
+      if (!homo) {
+        sinCategoria.push(
+          `${sys.name} · ${c.materialDetail} (${c.segment}) — sin homologación definida, ${c.piezas} piezas`
+        );
+        continue;
+      }
+      if (homo.nota) notas.add(`${c.materialDetail}: ${homo.nota}`);
+
+      const objetivo = c.hasGrease
+        ? (homo.conGrasa ?? homo.sinGrasa)
+        : homo.sinGrasa;
       // Candidatas: mismo SIG, mismo segmento, subcategoría objetivo, y que no
       // sea la variante "Peligroso" salvo que la pieza lo sea.
       let cand = cats.filter(
@@ -195,6 +317,10 @@ async function main() {
   if (notas.size > 0) {
     console.log("\n⚠ DECISIONES A VALIDAR CON MB:");
     for (const n of notas) console.log(`   ${n}`);
+  }
+  if (conflictos.length > 0) {
+    console.log("\n⚠ RECICLABILIDAD RESUELTA POR MAYORÍA:");
+    for (const c of conflictos) console.log(`   ${c}`);
   }
   if (sinCategoria.length > 0) {
     console.log("\n⚠ SIN MAPEAR (no hay categoría equivalente):");
