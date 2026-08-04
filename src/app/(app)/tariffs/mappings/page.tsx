@@ -1,10 +1,5 @@
 import { db } from "@/server/db";
-import {
-  managementSystems,
-  tariffCategories,
-  productPieces,
-  products,
-} from "@/server/db/schema";
+import { productPieces, products } from "@/server/db/schema";
 import { sql, eq } from "drizzle-orm";
 import { getActivePriorityProduct } from "@/lib/priority-product-server";
 import {
@@ -22,13 +17,20 @@ import { MappingMatrix } from "./mapping-matrix";
 export default async function TariffMappingsPage() {
   const pp = await getActivePriorityProduct();
 
-  // Materiales únicos del catálogo (vista global pre-multi-tenancy),
-  // acotados al producto prioritario activo del sidebar
+  // Materiales únicos del catálogo, acotados al producto prioritario activo.
+  //
+  // La grasa y la peligrosidad entran en la agrupación: el cálculo de costo
+  // exige que el mapeo coincida en esos dos campos, y los SIG cobran distinto
+  // (ReSimple: PP sin grasa 2,95 UF/ton vs PP con grasa 5,09). Agrupando sin
+  // ellos, todo lo que se guardaba quedaba en has_grease=false y las piezas
+  // con grasa nunca encontraban tarifa.
   const materials = await db
     .select({
       materialClass: productPieces.materialClass,
       materialDetail: productPieces.materialDetail,
       isDomiciliary: productPieces.isDomiciliary,
+      hasGrease: productPieces.hasGrease,
+      isHazardous: productPieces.isHazardous,
       count: sql<number>`count(*)`.as("count"),
     })
     .from(productPieces)
@@ -37,7 +39,9 @@ export default async function TariffMappingsPage() {
     .groupBy(
       productPieces.materialClass,
       productPieces.materialDetail,
-      productPieces.isDomiciliary
+      productPieces.isDomiciliary,
+      productPieces.hasGrease,
+      productPieces.isHazardous
     )
     .orderBy(productPieces.materialClass, productPieces.materialDetail);
 
