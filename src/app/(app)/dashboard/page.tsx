@@ -7,6 +7,11 @@ import { CustomSection } from "./custom-section";
 import type { ChartConfig } from "@/lib/chart-types";
 import type { Piece } from "@/lib/aggregate";
 import {
+  ALL_MONTHS,
+  MONTH_NAMES,
+  monthFilters,
+} from "@/components/month-filter";
+import {
   Card,
   CardContent,
   CardDescription,
@@ -202,10 +207,12 @@ function getColor(material: string, index: number) {
 // ═══════════════════════════════════════════════════════════════
 // ProductSection — Sección auto-contenida por tipo de producto
 // ═══════════════════════════════════════════════════════════════
-function ProductSection({ productType, segment, year, systemName, title }: {
+function ProductSection({ productType, segment, year, period, systemName, title }: {
   productType: string;
   segment: "all" | "dom" | "nodom";
   year?: number;
+  /** "m:3" | "acc:3" | "" — ver components/month-filter */
+  period?: string;
   systemName?: string;
   title?: { label: string; emoji: string; color: string };
 }) {
@@ -213,8 +220,9 @@ function ProductSection({ productType, segment, year, systemName, title }: {
     isDomiciliary: segment === "all" ? undefined : segment === "dom",
     productType,
     year,
+    ...monthFilters(period ?? ""),
     systemName: systemName || undefined,
-  }), [segment, productType, year, systemName]);
+  }), [segment, productType, year, period, systemName]);
 
   const { data: summary, isLoading: summaryLoading } =
     trpc.costs.summary.useQuery(costFilter);
@@ -466,6 +474,8 @@ export default function DashboardPage() {
   const [segment, setSegment] = useState<"all" | "dom" | "nodom">("all");
   const [year, setYear] = useState<number | undefined>(undefined);
   const [systemName, setSystemName] = useState<string>("");
+  /** Período: todo el año, un mes puntual, o acumulado a un mes */
+  const [period, setPeriod] = useState<string>(ALL_MONTHS);
 
   // El producto prioritario activo viene del selector del sidebar
   const productType = useProductType();
@@ -476,6 +486,7 @@ export default function DashboardPage() {
   });
   const availableYears = filters?.years ?? [];
   const availableSystems = filters?.systems ?? [];
+  const availableMonths = filters?.months ?? [];
 
   // Sin opción "Todos": el primer sistema disponible queda seleccionado
   // por defecto (también al cambiar de producto si el actual ya no existe)
@@ -509,6 +520,25 @@ export default function DashboardPage() {
               <option value="">Todos los años</option>
               {availableYears.map((y) => (
                 <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+            {/* Período: las empresas declaran mes a mes y con desfase */}
+            <select
+              value={period}
+              onChange={(e) => setPeriod(e.target.value)}
+              className="h-9 rounded-lg border bg-muted/30 px-3 text-sm font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 appearance-none cursor-pointer"
+              style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', paddingRight: '28px' }}
+            >
+              <option value={ALL_MONTHS}>Todo el año</option>
+              {availableMonths.map((m) => (
+                <option key={`acc:${m}`} value={`acc:${m}`}>
+                  Acumulado a {MONTH_NAMES[m - 1]}
+                </option>
+              ))}
+              {availableMonths.map((m) => (
+                <option key={`m:${m}`} value={`m:${m}`}>
+                  Solo {MONTH_NAMES[m - 1]}
+                </option>
               ))}
             </select>
             {/* Selector Sistema */}
@@ -564,6 +594,7 @@ export default function DashboardPage() {
           productType={productType}
           segment={segment}
           year={year}
+          period={period}
           systemName={systemName}
         />
       ) : (

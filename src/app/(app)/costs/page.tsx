@@ -4,6 +4,11 @@ import { useState, useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 import { useProductType } from "@/hooks/use-product-type";
 import {
+  ALL_MONTHS,
+  MONTH_NAMES,
+  monthFilters,
+} from "@/components/month-filter";
+import {
   Card,
   CardContent,
   CardDescription,
@@ -44,18 +49,21 @@ export default function CostsPage() {
   const [category, setCategory] = useState<string>("all");
   const [materialClass, setMaterialClass] = useState<string>("all");
   const [sig, setSig] = useState<string>("all");
+  /** Período: todo el año, un mes puntual, o acumulado a un mes */
+  const [period, setPeriod] = useState<string>(ALL_MONTHS);
   const productType = useProductType();
 
   const filters = useMemo(
     () => ({
       year: year !== "all" ? Number(year) : undefined,
+      ...monthFilters(period),
       brand: brand !== "all" ? brand : undefined,
       category: category !== "all" ? category : undefined,
       materialClass: materialClass !== "all" ? materialClass : undefined,
       systemName: sig !== "all" ? sig : undefined,
       productType: productType ?? undefined,
     }),
-    [year, brand, category, materialClass, sig, productType]
+    [year, period, brand, category, materialClass, sig, productType]
   );
 
   const { data: filterOptions } = trpc.costs.availableFilters.useQuery({
@@ -113,6 +121,33 @@ export default function CostsPage() {
               </SelectContent>
             </Select>
           </div>
+
+          {/* Período — las empresas declaran mes a mes y con desfase */}
+          {(filterOptions?.months?.length ?? 0) > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-semibold text-muted-foreground px-1">
+                Período
+              </span>
+              <Select value={period} onValueChange={setPeriod}>
+                <SelectTrigger className="w-[190px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_MONTHS}>Todo el año</SelectItem>
+                  {filterOptions?.months.map((m) => (
+                    <SelectItem key={`acc:${m}`} value={`acc:${m}`}>
+                      Acumulado a {MONTH_NAMES[m - 1]}
+                    </SelectItem>
+                  ))}
+                  {filterOptions?.months.map((m) => (
+                    <SelectItem key={`m:${m}`} value={`m:${m}`}>
+                      Solo {MONTH_NAMES[m - 1]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           <div className="flex flex-col gap-1.5">
             <span className="text-xs font-semibold text-muted-foreground px-1">Marca</span>

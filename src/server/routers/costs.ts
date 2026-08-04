@@ -45,6 +45,8 @@ interface CostRow {
   weightGrams: number;
   weightUnit: string;
   salesYear: number;
+  /** 0 = anual, 1-12 = mensual (las empresas declaran mes a mes) */
+  salesMonth: number;
   unitsSold: number;
   systemName: string;
   rateUfPerTon: number;
@@ -150,6 +152,10 @@ async function getCostRows(
   orgDbId: string | null,
   filters: {
     year?: number;
+    /** Mes puntual (1-12); 0 = registros anuales */
+    month?: number;
+    /** Acumulado: incluye los meses 1..monthUpTo */
+    monthUpTo?: number;
     brand?: string;
     category?: string;
     materialClass?: string;
@@ -204,6 +210,7 @@ async function getCostRows(
       weightGrams: productPieces.weightGrams,
       weightUnit: productPieces.weightUnit,
       salesYear: salesRecords.year,
+      salesMonth: salesRecords.month,
       unitsSold: salesRecords.unitsSold,
       activeSystemId: organizationPriorityProducts.activeSystemId,
       systemId: managementSystems.id,
@@ -277,6 +284,11 @@ async function getCostRows(
   // Filtros en memoria (las filas no son masivas en este dominio)
   const filteredRows = rows.filter((r) => {
     if (filters.year && r.salesYear !== filters.year) return false;
+    // month: un mes puntual. monthUpTo: acumulado a la fecha (1..N)
+    if (filters.month !== undefined && r.salesMonth !== filters.month)
+      return false;
+    if (filters.monthUpTo !== undefined && r.salesMonth > filters.monthUpTo)
+      return false;
     if (filters.brand && r.brand !== filters.brand) return false;
     if (filters.category && r.category !== filters.category) return false;
     if (filters.materialClass && r.materialClass !== filters.materialClass) return false;
@@ -321,6 +333,7 @@ async function getCostRows(
       weightGrams: Number(r.weightGrams),
       weightUnit: r.weightUnit,
       salesYear: r.salesYear,
+      salesMonth: r.salesMonth,
       unitsSold: r.unitsSold,
       systemName: r.systemName ?? "Sin SIG",
       rateUfPerTon,
@@ -331,6 +344,12 @@ async function getCostRows(
 // ── Filtros compartidos ──────────────────────────────────────────
 const costFilters = z.object({
   year: z.number().int().optional(),
+  /**
+   * Las empresas declaran mensualmente y con desfase (1 o 2 meses según sea
+   * DOM o NO DOM), así que hace falta ver un mes puntual o el acumulado.
+   */
+  month: z.number().int().min(0).max(12).optional(),
+  monthUpTo: z.number().int().min(1).max(12).optional(),
   brand: z.string().optional(),
   category: z.string().optional(),
   materialClass: z.string().optional(),
@@ -909,8 +928,17 @@ export const costsRouter = createTRPCRouter({
             .orderBy(asc(managementSystems.name)),
         ]);
 
+      // Meses con datos declarados (0 = registros anuales)
+      const monthsRaw = await db
+        .selectDistinct({ month: salesRecords.month })
+        .from(salesRecords)
+        .innerJoin(products, eq(salesRecords.productId, products.id))
+        .where(baseFilter)
+        .orderBy(asc(salesRecords.month));
+
       return {
         years: yearsRaw.map((y) => y.year),
+        months: monthsRaw.map((m) => m.month).filter((m) => m > 0),
         brands: brandsRaw.map((b) => b.brand).filter(Boolean) as string[],
         categories: categoriesRaw
           .map((c) => c.category)
