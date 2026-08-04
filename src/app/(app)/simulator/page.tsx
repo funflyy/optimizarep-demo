@@ -46,6 +46,8 @@ export default function SimulatorPage() {
   const [newWeight, setNewWeight] = useState<string>("");
   const [newUnits, setNewUnits] = useState<string>("");
   const [newMaterial, setNewMaterial] = useState<string>("");
+  /** Pieza a simular, como "nombre|materialDetalle" */
+  const [selectedPiece, setSelectedPiece] = useState<string>("");
 
   const formatChilean = (num: number, decimals: number = 2): string => {
     if (num === undefined || num === null || isNaN(num)) return "0";
@@ -64,6 +66,10 @@ export default function SimulatorPage() {
     productType: productType ?? undefined,
   });
 
+  const [pieceName, pieceMaterial] = selectedPiece
+    ? selectedPiece.split("|")
+    : [undefined, undefined];
+
   // Solo ejecutar cuando hay SKU y año
   const simulationInput = useMemo(() => {
     if (!selectedSku || !year) return null;
@@ -73,8 +79,11 @@ export default function SimulatorPage() {
       newWeightGrams: newWeight ? Number(newWeight) : undefined,
       newUnitsSold: newUnits ? Number(newUnits) : undefined,
       newMaterialDetail: newMaterial || undefined,
+      // El peso y la materialidad aplican solo a esta pieza
+      pieceName,
+      materialDetail: pieceMaterial,
     };
-  }, [selectedSku, year, newWeight, newUnits, newMaterial]);
+  }, [selectedSku, year, newWeight, newUnits, newMaterial, pieceName, pieceMaterial]);
 
   const {
     data: simulation,
@@ -91,7 +100,14 @@ export default function SimulatorPage() {
     setNewWeight("");
     setNewUnits("");
     setNewMaterial("");
+    setSelectedPiece("");
   };
+
+  const pieces = hasResults ? simulation.pieces : [];
+  const pieceKey = (p: { pieceName: string; materialDetail: string }) =>
+    `${p.pieceName}|${p.materialDetail}`;
+  /** El peso y la materialidad exigen elegir pieza: si no, se mezclan materiales */
+  const needsPiece = pieces.length > 1 && !selectedPiece;
 
   // Cambio de materialidad: solo aplica a envases (ecodiseño)
   const isEnvases = productType === "envases_embalajes";
@@ -120,19 +136,27 @@ export default function SimulatorPage() {
         </CardHeader>
         <CardContent>
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-5">
-            {/* SKU selector */}
-            <div className="space-y-2">
+            {/* SKU selector — min-w-0 + truncate: el nombre del producto se
+                desbordaba sobre el campo Año */}
+            <div className="space-y-2 min-w-0">
               <Label htmlFor="sku">Producto (SKU)</Label>
               <Select value={selectedSku} onValueChange={setSelectedSku}>
-                <SelectTrigger id="sku">
-                  <SelectValue placeholder="Seleccionar SKU..." />
+                <SelectTrigger id="sku" className="w-full min-w-0">
+                  <SelectValue
+                    placeholder="Seleccionar SKU..."
+                    className="truncate"
+                  />
                 </SelectTrigger>
-                <SelectContent>
-                  {productList?.products.map((p: any) => (
+                <SelectContent className="max-w-[min(90vw,28rem)]">
+                  {productList?.products.map((p) => (
                     <SelectItem key={p.id} value={p.sku}>
-                      <span className="font-mono text-xs">{p.sku}</span>
-                      <span className="ml-2 text-muted-foreground">
-                        {p.name}
+                      <span className="flex min-w-0 items-baseline gap-2">
+                        <span className="font-mono text-xs shrink-0">
+                          {p.sku}
+                        </span>
+                        <span className="truncate text-muted-foreground">
+                          {p.name}
+                        </span>
                       </span>
                     </SelectItem>
                   ))}
@@ -157,13 +181,40 @@ export default function SimulatorPage() {
               </Select>
             </div>
 
+            {/* Pieza a simular — sin esto el peso se aplicaba a todas las
+                piezas y se mezclaban materiales de precio muy distinto */}
+            {pieces.length > 1 && (
+              <div className="space-y-2 min-w-0">
+                <Label htmlFor="piece">Pieza a modificar</Label>
+                <Select value={selectedPiece} onValueChange={setSelectedPiece}>
+                  <SelectTrigger id="piece" className="w-full min-w-0">
+                    <SelectValue placeholder="Elegir pieza..." className="truncate" />
+                  </SelectTrigger>
+                  <SelectContent className="max-w-[min(90vw,28rem)]">
+                    {pieces.map((p) => (
+                      <SelectItem key={pieceKey(p)} value={pieceKey(p)}>
+                        <span className="flex min-w-0 items-baseline gap-2">
+                          <span className="truncate">{p.pieceName}</span>
+                          <span className="text-muted-foreground text-xs shrink-0">
+                            {p.materialDetail} ·{" "}
+                            {formatChilean(p.weightGrams, 2)} g ·{" "}
+                            {p.isDomiciliary ? "DOM" : "NO DOM"}
+                          </span>
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
             {/* Nuevo peso */}
             <div className="space-y-2">
               <Label htmlFor="weight">
                 Nuevo Peso (g)
-                {hasResults && (
+                {hasResults && !needsPiece && (
                   <span className="text-muted-foreground ml-1">
-                    actual: {simulation.inputs.currentWeight}g
+                    actual: {formatChilean(simulation.inputs.currentWeight, 2)}g
                   </span>
                 )}
               </Label>
@@ -172,10 +223,13 @@ export default function SimulatorPage() {
                 type="number"
                 min="0.1"
                 step="0.1"
+                disabled={needsPiece}
                 placeholder={
-                  hasResults
-                    ? String(simulation.inputs.currentWeight)
-                    : "Peso en gramos"
+                  needsPiece
+                    ? "Elige una pieza"
+                    : hasResults
+                      ? String(simulation.inputs.currentWeight)
+                      : "Peso en gramos"
                 }
                 value={newWeight}
                 onChange={(e) => setNewWeight(e.target.value)}
@@ -212,15 +266,24 @@ export default function SimulatorPage() {
               <div className="space-y-2">
                 <Label htmlFor="material">
                   Nueva Materialidad
-                  {hasResults && (
+                  {hasResults && !needsPiece && (
                     <span className="text-muted-foreground ml-1">
                       actual: {simulation.inputs.currentMaterial}
                     </span>
                   )}
                 </Label>
-                <Select value={newMaterial} onValueChange={setNewMaterial}>
-                  <SelectTrigger id="material">
-                    <SelectValue placeholder="Mantener material..." />
+                <Select
+                  value={newMaterial}
+                  onValueChange={setNewMaterial}
+                  disabled={needsPiece}
+                >
+                  <SelectTrigger id="material" className="w-full min-w-0">
+                    <SelectValue
+                      placeholder={
+                        needsPiece ? "Elige una pieza" : "Mantener material..."
+                      }
+                      className="truncate"
+                    />
                   </SelectTrigger>
                   <SelectContent>
                     {filterOptions?.materials.map((m) => (
@@ -285,6 +348,73 @@ export default function SimulatorPage() {
         </Card>
       )}
 
+      {/* Desglose de piezas: deja ver que un envase mezcla materiales con
+          tarifas muy distintas, y cuál se está simulando */}
+      {hasResults && simulation.pieces.length > 1 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <PackageIcon className="h-4 w-4 text-muted-foreground" />
+              Piezas del envase
+            </CardTitle>
+            <CardDescription>
+              El peso y la materialidad se simulan por pieza. Cada material tiene
+              su propia tarifa, así que cambiarlas todas juntas distorsiona el
+              resultado.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Pieza</TableHead>
+                  <TableHead>Material</TableHead>
+                  <TableHead>Segmento</TableHead>
+                  <TableHead className="text-right">Peso (g)</TableHead>
+                  <TableHead className="text-right">% del peso</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {simulation.pieces.map((p) => {
+                  const isTarget = pieceKey(p) === selectedPiece;
+                  return (
+                    <TableRow
+                      key={pieceKey(p)}
+                      className={isTarget ? "bg-primary/5" : undefined}
+                    >
+                      <TableCell className="font-medium">
+                        {p.pieceName}
+                        {isTarget && (
+                          <Badge className="ml-2 text-xs">simulando</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell>{p.materialDetail}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="font-normal text-xs">
+                          {p.isDomiciliary ? "DOM" : "NO DOM"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {formatChilean(p.weightGrams, 2)}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-muted-foreground">
+                        {simulation.totalWeightGrams > 0
+                          ? formatChilean(
+                              (p.weightGrams / simulation.totalWeightGrams) * 100,
+                              1
+                            )
+                          : "0"}
+                        %
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Resultados de simulación */}
       {hasResults && (
         <>
@@ -302,7 +432,11 @@ export default function SimulatorPage() {
                   {simulation.sku}
                 </p>
                 <p className="text-xs mt-1">
-                  <span className="text-muted-foreground">Material: </span>
+                  <span className="text-muted-foreground">
+                    {simulation.inputs.pieceName
+                      ? `${simulation.inputs.pieceName}: `
+                      : "Material: "}
+                  </span>
                   {simulation.inputs.currentMaterial}
                   {simulation.inputs.newMaterial !==
                     simulation.inputs.currentMaterial && (
@@ -311,6 +445,11 @@ export default function SimulatorPage() {
                       {simulation.inputs.newMaterial}
                     </span>
                   )}
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {simulation.pieces.length} pieza
+                  {simulation.pieces.length === 1 ? "" : "s"} ·{" "}
+                  {formatChilean(simulation.totalWeightGrams, 2)} g por unidad
                 </p>
               </CardContent>
             </Card>

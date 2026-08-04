@@ -301,6 +301,12 @@ function ProductSection({ productType, segment, year, systemName, title }: {
             <div className="text-xl font-bold">
               {summaryLoading ? "..." : `UF ${(summary?.totalCostUf ?? 0).toLocaleString("es-CL")}`}
             </div>
+            {/* Nunca la suma entre SIG: se declara en uno solo */}
+            <p className="text-[10px] text-muted-foreground">
+              {summary?.isComparison
+                ? `${summary.referenceSystem} · el más económico de ${summary.costBySig.length}`
+                : (summary?.referenceSystem ?? "sin SIG")}
+            </p>
           </CardContent>
         </Card>
         <Card>

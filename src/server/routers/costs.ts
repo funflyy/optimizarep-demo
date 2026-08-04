@@ -72,6 +72,66 @@ function calcCost(row: CostRow) {
 }
 
 /**
+ * Agrega filas agrupando por SIG, sin sumar entre sistemas.
+ *
+ * En modo libre `getCostRows` emite una fila por cada SIG del producto
+ * prioritario, así que sumar todas las filas cuenta lo mismo N veces: el
+ * tonelaje se triplicaba (33.468 en vez de 11.156) y el "Costo REP Total" era
+ * la suma de tres alternativas que la empresa nunca paga juntas — declara en
+ * uno solo.
+ *
+ * El tonelaje NO depende del SIG (la misma pieza se declara una vez), así que
+ * se toma el mayor entre sistemas, no la suma.
+ */
+function aggregateBySig(rows: CostRow[]) {
+  const bySig = new Map<
+    string,
+    { tons: number; costUf: number; byMaterial: Map<string, { tons: number; costUf: number }> }
+  >();
+
+  for (const row of rows) {
+    const { tons, costUf } = calcCost(row);
+    let sig = bySig.get(row.systemName);
+    if (!sig) {
+      sig = { tons: 0, costUf: 0, byMaterial: new Map() };
+      bySig.set(row.systemName, sig);
+    }
+    sig.tons += tons;
+    sig.costUf += costUf;
+
+    const mat = sig.byMaterial.get(row.materialClass) ?? { tons: 0, costUf: 0 };
+    mat.tons += tons;
+    mat.costUf += costUf;
+    sig.byMaterial.set(row.materialClass, mat);
+  }
+
+  const sigs = [...bySig.entries()];
+
+  /** Tonelaje declarado, contado una sola vez */
+  const tons = sigs.length > 0 ? Math.max(...sigs.map(([, s]) => s.tons)) : 0;
+
+  /**
+   * SIG de referencia para los KPI de un solo número. Con un SIG filtrado es
+   * ese; comparando varios se usa el más económico entre los que tienen tarifa,
+   * y la UI lo rotula para no dar a entender que es "el" costo.
+   */
+  const withCost = sigs.filter(([, s]) => s.costUf > 0);
+  const reference =
+    withCost.length > 0
+      ? withCost.reduce((a, b) => (b[1].costUf < a[1].costUf ? b : a))
+      : sigs[0];
+
+  return {
+    bySig,
+    tons,
+    isComparison: sigs.length > 1,
+    referenceSystem: reference?.[0] ?? null,
+    referenceCostUf: reference?.[1].costUf ?? 0,
+    referenceByMaterial: reference?.[1].byMaterial ?? new Map(),
+  };
+}
+
+/**
  * Obtiene todas las filas de costo: piezas × ventas × SIG ACTIVO de la
  * organización (acuerdo 11-jul: la tarifa es la del sistema que la empresa
  * declara usar para ese producto prioritario).
@@ -292,50 +352,19 @@ export const costsRouter = createTRPCRouter({
       const filters = input ?? {};
       const rows = await getCostRows(ctx.orgDbId, filters);
 
-      // Agrupar por sistema
-      const bySig = new Map<string, { tons: number; costUf: number }>();
-      let totalTons = 0;
-      let totalCostUf = 0;
+      const agg = aggregateBySig(rows);
 
-      // Material → costo
-      const byMaterial = new Map<string, { tons: number; costUf: number }>();
-
-      // SKU → costo (para contar)
-      const skuCosts = new Map<string, number>();
-
-      for (const row of rows) {
-        const { tons, costUf } = calcCost(row);
-        totalTons += tons;
-        totalCostUf += costUf;
-
-        // Por SIG
-        const sig = bySig.get(row.systemName) ?? { tons: 0, costUf: 0 };
-        sig.tons += tons;
-        sig.costUf += costUf;
-        bySig.set(row.systemName, sig);
-
-        // Por Material (para encontrar el de mayor costo)
-        const mat = byMaterial.get(row.materialClass) ?? { tons: 0, costUf: 0 };
-        mat.tons += tons;
-        mat.costUf += costUf;
-        byMaterial.set(row.materialClass, mat);
-
-        // Por SKU
-        skuCosts.set(row.sku, (skuCosts.get(row.sku) ?? 0) + costUf);
-      }
-
-      // Material de mayor costo
+      // Material de mayor costo, del SIG de referencia (no la suma de todos)
       let topMaterial = "—";
       let topMaterialCost = 0;
-      for (const [name, data] of byMaterial) {
+      for (const [name, data] of agg.referenceByMaterial) {
         if (data.costUf > topMaterialCost) {
           topMaterial = name;
           topMaterialCost = data.costUf;
         }
       }
 
-      // Costo por SIG como array
-      const costBySig = Array.from(bySig.entries())
+      const costBySig = Array.from(agg.bySig.entries())
         .map(([name, data]) => ({
           systemName: name,
           tons: Math.round(data.tons * 100) / 100,
@@ -343,12 +372,29 @@ export const costsRouter = createTRPCRouter({
         }))
         .sort((a, b) => a.costUf - b.costUf);
 
+      const conCosto = costBySig.filter((s) => s.costUf > 0);
+
       return {
-        totalTons: Math.round(totalTons * 100) / 100,
-        totalCostUf: Math.round(totalCostUf * 100) / 100,
+        totalTons: Math.round(agg.tons * 100) / 100,
+        /** Costo del SIG de referencia; nunca la suma entre sistemas */
+        totalCostUf: Math.round(agg.referenceCostUf * 100) / 100,
+        /** true cuando hay más de un SIG en juego: el total es comparativo */
+        isComparison: agg.isComparison,
+        /** SIG al que corresponde totalCostUf */
+        referenceSystem: agg.referenceSystem,
+        /** Rango entre SIG con tarifa, para rotular la comparación */
+        costRange:
+          conCosto.length > 1
+            ? {
+                min: conCosto[0].costUf,
+                minSystem: conCosto[0].systemName,
+                max: conCosto[conCosto.length - 1].costUf,
+                maxSystem: conCosto[conCosto.length - 1].systemName,
+              }
+            : null,
         topMaterial,
         topMaterialCost: Math.round(topMaterialCost * 100) / 100,
-        skuCount: skuCosts.size,
+        skuCount: new Set(rows.map((r) => r.sku)).size,
         costBySig,
       };
     }),
@@ -368,11 +414,9 @@ export const costsRouter = createTRPCRouter({
         string,
         Map<string, { tons: number; costUf: number }>
       >();
-      let grandTotalCost = 0;
 
       for (const row of rows) {
         const { tons, costUf } = calcCost(row);
-        grandTotalCost += costUf;
 
         if (!map.has(row.materialClass)) map.set(row.materialClass, new Map());
         const matSystems = map.get(row.materialClass)!;
@@ -386,28 +430,34 @@ export const costsRouter = createTRPCRouter({
       // Listar todos los SIGs presentes
       const allSystems = [...new Set(rows.map((r) => r.systemName))].sort();
 
-      const result = Array.from(map.entries()).map(([material, systems]) => {
-        let totalTons = 0;
-        let materialCost = 0;
-        const costsBySig: Record<string, number> = {};
+      // El % se mide contra el SIG de referencia, no contra la suma de todos
+      const agg = aggregateBySig(rows);
+      const referenceTotal = agg.referenceCostUf;
 
+      const result = Array.from(map.entries()).map(([material, systems]) => {
+        const costsBySig: Record<string, number> = {};
         for (const sig of allSystems) {
-          const data = systems.get(sig);
-          costsBySig[sig] = Math.round((data?.costUf ?? 0) * 100) / 100;
-          if (data) {
-            totalTons += data.tons;
-            materialCost += data.costUf;
-          }
+          costsBySig[sig] = Math.round((systems.get(sig)?.costUf ?? 0) * 100) / 100;
         }
 
+        // Tonelaje del material: el mismo en cada SIG, así que se toma el mayor
+        // en vez de sumar (sumar lo multiplicaba por la cantidad de SIG)
+        const tons = Math.max(
+          0,
+          ...[...systems.values()].map((s) => s.tons)
+        );
+
+        const referenceCost = agg.referenceSystem
+          ? (systems.get(agg.referenceSystem)?.costUf ?? 0)
+          : 0;
         const pctTotal =
-          grandTotalCost > 0
-            ? Math.round((materialCost / grandTotalCost) * 1000) / 10
+          referenceTotal > 0
+            ? Math.round((referenceCost / referenceTotal) * 1000) / 10
             : 0;
 
         return {
           material,
-          tons: Math.round(totalTons * 100) / 100,
+          tons: Math.round(tons * 100) / 100,
           costsBySig,
           pctTotal,
         };
@@ -416,6 +466,8 @@ export const costsRouter = createTRPCRouter({
       return {
         data: result.sort((a, b) => b.tons - a.tons),
         systems: allSystems,
+        /** SIG usado para el % (null si no hay ninguno con tarifa) */
+        referenceSystem: agg.referenceSystem,
       };
     }),
 
@@ -549,6 +601,14 @@ export const costsRouter = createTRPCRouter({
         newWeightGrams: z.number().positive().optional(),
         newMaterialDetail: z.string().optional(),
         newUnitsSold: z.number().int().positive().optional(),
+        /**
+         * Pieza a modificar. Sin esto el peso y la materialidad se aplicaban a
+         * TODAS las piezas del SKU, lo que invertía la mezcla de materiales:
+         * bajar el gramaje "general" encogía la pieza barata y engordaba las
+         * caras, y el costo subía aunque el tonelaje bajara.
+         */
+        pieceName: z.string().optional(),
+        materialDetail: z.string().optional(),
       })
     )
     .query(async ({ ctx, input }) => {
@@ -658,16 +718,27 @@ export const costsRouter = createTRPCRouter({
       }
 
       // Escenario simulado (peso, volumen y/o materialidad)
+      //
+      // El peso y la materialidad afectan SOLO a la pieza elegida; el volumen
+      // es del SKU completo, así que aplica a todas las filas.
+      const targetsPiece = (row: (typeof skuRows)[number]) =>
+        (!input.pieceName || row.pieceName === input.pieceName) &&
+        (!input.materialDetail || row.materialDetail === input.materialDetail);
+
       const simBySig = new Map<string, { tons: number; costUf: number }>();
       for (const row of skuRows) {
         const segment = row.isDomiciliary ? "Domiciliario" : "No Domiciliario";
+        const isTarget = targetsPiece(row);
         const simRow = {
           ...row,
-          weightGrams: input.newWeightGrams ?? row.weightGrams,
+          weightGrams: isTarget
+            ? (input.newWeightGrams ?? row.weightGrams)
+            : row.weightGrams,
           unitsSold: input.newUnitsSold ?? row.unitsSold,
-          rateUfPerTon: input.newMaterialDetail
-            ? (newRateBySegment.get(segment) ?? 0)
-            : row.rateUfPerTon,
+          rateUfPerTon:
+            isTarget && input.newMaterialDetail
+              ? (newRateBySegment.get(segment) ?? 0)
+              : row.rateUfPerTon,
         };
         const { tons, costUf } = calcCost(simRow);
 
@@ -705,16 +776,68 @@ export const costsRouter = createTRPCRouter({
         }
       );
 
+      /**
+       * Piezas del SKU, deduplicadas: skuRows trae una fila por pieza × período
+       * × SIG. Alimenta el selector de pieza del simulador y evita mostrar
+       * "Material: PET" cuando el envase tiene 4 materiales distintos.
+       */
+      const pieces = Array.from(
+        skuRows
+          .reduce(
+            (acc, r) => {
+              const key = `${r.pieceName}|${r.materialDetail}|${r.isDomiciliary}`;
+              if (!acc.has(key)) {
+                acc.set(key, {
+                  pieceName: r.pieceName,
+                  materialClass: r.materialClass,
+                  materialDetail: r.materialDetail,
+                  isDomiciliary: r.isDomiciliary,
+                  weightGrams: r.weightGrams,
+                });
+              }
+              return acc;
+            },
+            new Map<
+              string,
+              {
+                pieceName: string;
+                materialClass: string;
+                materialDetail: string;
+                isDomiciliary: boolean;
+                weightGrams: number;
+              }
+            >()
+          )
+          .values()
+      ).sort((a, b) => b.weightGrams - a.weightGrams);
+
+      /** Pieza sobre la que se está simulando (null = todas) */
+      const target =
+        pieces.find(
+          (p) =>
+            (!input.pieceName || p.pieceName === input.pieceName) &&
+            (!input.materialDetail || p.materialDetail === input.materialDetail)
+        ) ?? null;
+
+      const totalWeight = pieces.reduce((a, p) => a + p.weightGrams, 0);
+
       return {
         sku: input.sku,
         productName: skuRows[0].productName,
+        /** Todas las piezas, para elegir cuál simular */
+        pieces,
+        /** Peso de una unidad completa del producto, sumando sus piezas */
+        totalWeightGrams: Math.round(totalWeight * 100) / 100,
         inputs: {
-          currentWeight: skuRows[0].weightGrams,
-          newWeight: input.newWeightGrams ?? skuRows[0].weightGrams,
+          /** Peso de la pieza simulada, no de una pieza al azar */
+          currentWeight: target?.weightGrams ?? totalWeight,
+          newWeight: input.newWeightGrams ?? target?.weightGrams ?? totalWeight,
           currentUnits: skuRows[0].unitsSold,
           newUnits: input.newUnitsSold ?? skuRows[0].unitsSold,
-          currentMaterial: skuRows[0].materialDetail,
-          newMaterial: input.newMaterialDetail ?? skuRows[0].materialDetail,
+          currentMaterial: target?.materialDetail ?? "varios",
+          newMaterial:
+            input.newMaterialDetail ?? target?.materialDetail ?? "varios",
+          pieceName: target?.pieceName ?? null,
         },
         results,
       };

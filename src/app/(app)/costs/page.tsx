@@ -230,9 +230,24 @@ export default function CostsPage() {
                 ? "..."
                 : `UF ${(summary?.totalCostUf ?? 0).toLocaleString("es-CL")}`}
             </div>
+            {/*
+              Nunca la suma entre SIG: la empresa declara en uno solo. Cuando
+              hay varios en juego se rotula cuál es y cuánto varía.
+            */}
             <p className="text-xs text-muted-foreground">
-              Según el SIG activo de cada productor
+              {summary?.isComparison
+                ? `${summary.referenceSystem}, el más económico de ${summary.costBySig.length} SIG`
+                : `Según el SIG activo${summary?.referenceSystem ? `: ${summary.referenceSystem}` : ""}`}
             </p>
+            {summary?.costRange && (
+              <p className="text-xs text-amber-600 dark:text-amber-500 mt-1">
+                Hasta UF {summary.costRange.max.toLocaleString("es-CL")} en{" "}
+                {summary.costRange.maxSystem} · diferencia UF{" "}
+                {(
+                  summary.costRange.max - summary.costRange.min
+                ).toLocaleString("es-CL")}
+              </p>
+            )}
           </CardContent>
         </Card>
 
