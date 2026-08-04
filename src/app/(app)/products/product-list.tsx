@@ -39,6 +39,22 @@ export function ProductList() {
   const { data: categories = [] } = trpc.product.categories.useQuery();
 
   const allProducts = data?.products ?? [];
+
+  /**
+   * SKU desde los que se puede copiar el envase: los que tienen piezas y no son
+   * ellos mismos una réplica, para no encadenar copias de copias.
+   */
+  const replicaCandidates = allProducts
+    .filter(
+      (p) => p.pieces.length > 0 && !p.pieces.some((pc) => pc.isReplica)
+    )
+    .map((p) => ({
+      id: p.id,
+      sku: p.sku,
+      name: p.name,
+      pieceCount: p.pieces.length,
+    }));
+
   const totalPieces = allProducts.reduce(
     (acc, p) => acc + p.pieces.length,
     0
@@ -173,7 +189,13 @@ export function ProductList() {
               </TableHeader>
               <TableBody>
                 {allProducts.map((product) => (
-                  <ProductRow key={product.id} product={product as any} />
+                  <ProductRow
+                    key={product.id}
+                    product={product}
+                    candidates={replicaCandidates.filter(
+                      (c) => c.id !== product.id
+                    )}
+                  />
                 ))}
               </TableBody>
             </Table>

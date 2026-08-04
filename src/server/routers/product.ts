@@ -362,6 +362,100 @@ export const productRouter = createTRPCRouter({
       });
     }),
 
+  /**
+   * Replica las piezas de otro SKU.
+   *
+   * El mismo envase se repite en muchos SKU (la misma botella para 10 sabores),
+   * así que volver a declarar pieza por pieza es trabajo duplicado y una fuente
+   * de inconsistencias. Las piezas copiadas quedan marcadas con
+   * `isReplica` + `originalSku` para poder rastrear de dónde salieron.
+   *
+   * Reemplaza las piezas del destino, igual que `update`.
+   */
+  replicatePieces: orgProcedure
+    .input(
+      z.object({
+        targetProductId: z.string().uuid(),
+        sourceSku: z.string().min(1),
+        organizationId: z.string().uuid().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const orgId = await resolveTargetOrg(ctx.db, ctx, input.organizationId);
+
+      const source = await ctx.db.query.products.findFirst({
+        where: (p, { eq: _eq, and: _and }) =>
+          _and(_eq(p.sku, input.sourceSku), _eq(p.organizationId, orgId)),
+        with: { pieces: true },
+      });
+      if (!source) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `No existe el SKU ${input.sourceSku} en esta organización`,
+        });
+      }
+      if (source.pieces.length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `El SKU ${input.sourceSku} no tiene piezas que copiar`,
+        });
+      }
+      if (source.id === input.targetProductId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "El origen y el destino son el mismo producto",
+        });
+      }
+
+      const target = await ctx.db.query.products.findFirst({
+        where: (p, { eq: _eq, and: _and }) =>
+          _and(_eq(p.id, input.targetProductId), _eq(p.organizationId, orgId)),
+      });
+      if (!target) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Producto destino no encontrado en esta organización",
+        });
+      }
+
+      return ctx.db.transaction(async (tx) => {
+        await tx
+          .delete(productPieces)
+          .where(eq(productPieces.productId, target.id));
+
+        await tx.insert(productPieces).values(
+          source.pieces.map((p) => ({
+            productId: target.id,
+            pieceName: p.pieceName,
+            packagingType: p.packagingType,
+            isDomiciliary: p.isDomiciliary,
+            materialClass: p.materialClass,
+            wasteType: p.wasteType,
+            materialDetail: p.materialDetail,
+            weightGrams: p.weightGrams,
+            weightValue: p.weightValue,
+            weightUnit: p.weightUnit,
+            categoryLevel1: p.categoryLevel1,
+            categoryLevel2: p.categoryLevel2,
+            metadata: p.metadata,
+            hasGrease: p.hasGrease,
+            isHazardous: p.isHazardous,
+            plasticCharacteristic: p.plasticCharacteristic,
+            repCategoryId: p.repCategoryId,
+            // Trazabilidad: de dónde se copió
+            isReplica: true,
+            originalSku: source.sku,
+          }))
+        );
+
+        return {
+          targetSku: target.sku,
+          sourceSku: source.sku,
+          piecesCopied: source.pieces.length,
+        };
+      });
+    }),
+
   /** Eliminar producto — verifica ownership */
   delete: orgProcedure
     .input(z.object({ id: z.string().uuid() }))
