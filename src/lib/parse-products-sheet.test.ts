@@ -141,13 +141,15 @@ describe("parseProductsSheet", () => {
     expect(p.sales.map((s) => s.month)).toEqual([1, 2]);
   });
 
-  it("registra una venta por período, no por pieza", () => {
+  it("registra una venta por período y segmento, no por pieza", () => {
     const rows = [
       row({ Pieza: "Botella", Ventas: 172066 }),
       row({ Pieza: "Tapa", "Peso (g)": 3, Ventas: 172066 }),
     ];
     const [p] = parseProductsSheet(rows);
-    expect(p.sales).toEqual([{ year: 2025, month: 1, unitsSold: 172066 }]);
+    expect(p.sales).toEqual([
+      { year: 2025, month: 1, segment: "Domiciliario", unitsSold: 172066 },
+    ]);
   });
 
   it("con ventas inconsistentes usa la moda y avisa", () => {
@@ -163,7 +165,11 @@ describe("parseProductsSheet", () => {
     expect(isImportable(p)).toBe(true);
   });
 
-  it("prefiere las ventas domiciliarias sobre las NO DOM", () => {
+  it("separa las ventas de DOM y NO DOM del mismo mes", () => {
+    // Las unidades del detalle (172.066 botellas) y las del transporte
+    // (8.000 pallets) no son intercambiables. Antes se guardaba solo la
+    // domiciliaria y se aplicaba también a los pallets, lo que multiplicaba
+    // el tonelaje no domiciliario por ~20.
     const rows = [
       row({ Pieza: "Botella", "Categoría REP": "DOM", Ventas: 172066 }),
       row({
@@ -175,7 +181,24 @@ describe("parseProductsSheet", () => {
       }),
     ];
     const [p] = parseProductsSheet(rows);
-    expect(p.sales[0].unitsSold).toBe(172066);
+    expect(p.sales).toEqual([
+      { year: 2025, month: 1, segment: "Domiciliario", unitsSold: 172066 },
+      { year: 2025, month: 1, segment: "No Domiciliario", unitsSold: 8000 },
+    ]);
+  });
+
+  it("no mezcla las ventas entre segmentos al calcular la moda", () => {
+    // Tres filas NO DOM iguales no deben arrastrar la cifra domiciliaria
+    const rows = [
+      row({ Pieza: "Botella", "Categoría REP": "DOM", Ventas: 172066 }),
+      row({ Pieza: "Film", "Categoría REP": "NO DOM", "Peso (g)": 100, Ventas: 8000 }),
+      row({ Pieza: "Caja", "Categoría REP": "NO DOM", "Peso (g)": 200, Ventas: 8000 }),
+    ];
+    const [p] = parseProductsSheet(rows);
+    const dom = p.sales.find((s) => s.segment === "Domiciliario");
+    const noDom = p.sales.find((s) => s.segment === "No Domiciliario");
+    expect(dom?.unitsSold).toBe(172066);
+    expect(noDom?.unitsSold).toBe(8000);
   });
 
   it("omite la pieza sin peso con un aviso, sin invalidar el producto", () => {

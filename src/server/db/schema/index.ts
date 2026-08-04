@@ -214,6 +214,18 @@ export const salesRecords = pgTable(
     year: integer("year").notNull(),
     /** Mes del período: 0 = anual, 1-12 = mensual (la MAESTRA declara mensual) */
     month: integer("month").default(0).notNull(),
+    /**
+     * Segmento al que aplican estas unidades: 'Domiciliario' | 'No Domiciliario'.
+     *
+     * En un mismo mes un SKU tiene dos cifras distintas: las unidades de venta
+     * al detalle (172.066 botellas) y los pallets o cajas que las transportan
+     * (8.000). Sin este campo había una sola fila por mes y las unidades del
+     * detalle se aplicaban también a los pallets, inflando el tonelaje NO
+     * DOMICILIARIO unas 150 veces.
+     */
+    segment: varchar("segment", { length: 50 })
+      .default("Domiciliario")
+      .notNull(),
     /** Unidades vendidas en el período */
     unitsSold: integer("units_sold").notNull(),
     /** Unidad de la cantidad: 'unidades' | 'litros' (aceites lubricantes) */
@@ -226,7 +238,8 @@ export const salesRecords = pgTable(
     uniqueIndex("sales_product_period_idx").on(
       table.productId,
       table.year,
-      table.month
+      table.month,
+      table.segment
     ),
   ]
 );

@@ -227,7 +227,20 @@ async function getCostRows(
         orgDbId ? eq(products.organizationId, orgDbId) : undefined
       )
     )
-    .innerJoin(salesRecords, eq(products.id, salesRecords.productId))
+    // Las ventas se cruzan por segmento: en un mismo mes el detalle y el
+    // transporte traen cifras distintas (172.066 botellas vs 8.000 pallets).
+    // Sin esta condición las unidades del detalle se aplicaban también a los
+    // pallets e inflaban el tonelaje NO DOMICILIARIO ~150 veces.
+    .innerJoin(
+      salesRecords,
+      and(
+        eq(products.id, salesRecords.productId),
+        eq(
+          salesRecords.segment,
+          sql`CASE WHEN ${productPieces.isDomiciliary} THEN 'Domiciliario' ELSE 'No Domiciliario' END`
+        )
+      )
+    )
     .leftJoin(
       organizationPriorityProducts,
       and(

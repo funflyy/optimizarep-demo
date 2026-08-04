@@ -58,6 +58,13 @@ const productInputSchema = z.object({
       z.object({
         year: z.number().int().min(2019).max(2030),
         month: z.number().int().min(0).max(12).default(0),
+        /**
+         * Segmento al que aplican las unidades. Un mismo mes trae dos cifras:
+         * las unidades de venta al detalle y los pallets que las transportan.
+         */
+        segment: z
+          .enum(["Domiciliario", "No Domiciliario"])
+          .default("Domiciliario"),
         unitsSold: z.number().int().nonnegative(),
       })
     )
@@ -242,6 +249,7 @@ export const productRouter = createTRPCRouter({
                 productId: product.id,
                 year: s.year,
                 month: s.month,
+                segment: s.segment,
                 unitsSold: s.unitsSold,
                 unit: salesUnit,
               }))
@@ -323,7 +331,8 @@ export const productRouter = createTRPCRouter({
           );
         }
 
-        // Upsert ventas — por período si vienen varios, si no el legacy anual
+        // Upsert ventas — por período y segmento si vienen varios, si no el
+        // legacy anual. El índice único incluye el segmento.
         if (sales && sales.length > 0) {
           for (const s of sales) {
             await tx
@@ -332,6 +341,7 @@ export const productRouter = createTRPCRouter({
                 productId: input.id,
                 year: s.year,
                 month: s.month,
+                segment: s.segment,
                 unitsSold: s.unitsSold,
                 unit: salesUnit,
               })
@@ -340,6 +350,7 @@ export const productRouter = createTRPCRouter({
                   salesRecords.productId,
                   salesRecords.year,
                   salesRecords.month,
+                  salesRecords.segment,
                 ],
                 set: { unitsSold: s.unitsSold, updatedAt: new Date() },
               });
@@ -353,6 +364,7 @@ export const productRouter = createTRPCRouter({
                 salesRecords.productId,
                 salesRecords.year,
                 salesRecords.month,
+                salesRecords.segment,
               ],
               set: { unitsSold, updatedAt: new Date() },
             });
