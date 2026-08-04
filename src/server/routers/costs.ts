@@ -863,6 +863,68 @@ export const costsRouter = createTRPCRouter({
     }),
 
   /**
+   * monthlyEvolution — Toneladas y costo mes a mes, con acumulado.
+   *
+   * Las empresas declaran mensualmente y con desfase, así que el reporte que
+   * piden es "cuánto llevo declarado y cuánto llevo pagando a la fecha".
+   * Devuelve una serie por SIG para poder graficar la comparación.
+   */
+  monthlyEvolution: orgProcedure
+    .input(costFilters.optional())
+    .query(async ({ ctx, input }) => {
+      const filters = input ?? {};
+      // El mes lo pone la serie, no el filtro
+      const rows = await getCostRows(ctx.orgDbId, {
+        ...filters,
+        month: undefined,
+        monthUpTo: undefined,
+      });
+
+      // sig → mes → acumulador
+      const bySig = new Map<string, Map<number, { tons: number; costUf: number }>>();
+      for (const row of rows) {
+        if (!bySig.has(row.systemName)) bySig.set(row.systemName, new Map());
+        const months = bySig.get(row.systemName)!;
+        const acc = months.get(row.salesMonth) ?? { tons: 0, costUf: 0 };
+        const { tons, costUf } = calcCost(row);
+        acc.tons += tons;
+        acc.costUf += costUf;
+        months.set(row.salesMonth, acc);
+      }
+
+      const monthsPresent = [
+        ...new Set(rows.map((r) => r.salesMonth)),
+      ].sort((a, b) => a - b);
+
+      const series = [...bySig.entries()]
+        .map(([systemName, months]) => {
+          let accTons = 0;
+          let accCostUf = 0;
+          const points = monthsPresent.map((month) => {
+            const d = months.get(month) ?? { tons: 0, costUf: 0 };
+            accTons += d.tons;
+            accCostUf += d.costUf;
+            return {
+              month,
+              tons: Math.round(d.tons * 100) / 100,
+              costUf: Math.round(d.costUf * 100) / 100,
+              accTons: Math.round(accTons * 100) / 100,
+              accCostUf: Math.round(accCostUf * 100) / 100,
+            };
+          });
+          return {
+            systemName,
+            points,
+            totalTons: Math.round(accTons * 100) / 100,
+            totalCostUf: Math.round(accCostUf * 100) / 100,
+          };
+        })
+        .sort((a, b) => a.totalCostUf - b.totalCostUf);
+
+      return { months: monthsPresent, series };
+    }),
+
+  /**
    * availableFilters — Valores para los dropdowns, acotados a la organización
    * y al producto prioritario activo (años, marcas, categorías, materiales y
    * SIG solo del producto en contexto).

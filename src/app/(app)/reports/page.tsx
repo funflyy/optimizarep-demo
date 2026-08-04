@@ -16,8 +16,24 @@ import {
   Loader2Icon,
   CheckCircleIcon,
 } from "lucide-react";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
 import { useState } from "react";
 import { useProductType } from "@/hooks/use-product-type";
+import { MONTH_NAMES } from "@/components/month-filter";
+
+const uf = (n: number) =>
+  n.toLocaleString("es-CL", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 
 export default function ReportsPage() {
   const productType = useProductType();
@@ -25,6 +41,11 @@ export default function ReportsPage() {
     productType: productType ?? undefined,
   });
   const allProducts = data?.products ?? [];
+
+  const costFilter = { productType: productType ?? undefined };
+  // Comparativo entre SIG: es el formato de la hoja "Resultados" del Excel
+  const { data: byMaterial } = trpc.costs.byMaterial.useQuery(costFilter);
+  const { data: evolution } = trpc.costs.monthlyEvolution.useQuery(costFilter);
 
   const [exporting, setExporting] = useState<string | null>(null);
   const [exported, setExported] = useState<string | null>(null);
@@ -428,6 +449,164 @@ export default function ReportsPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Comparativo entre SIG — es el formato de la hoja "Resultados" del
+          Excel del cliente: material y segmento contra el costo en cada SIG */}
+      {byMaterial && byMaterial.data.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">
+              Comparativo entre Sistemas de Gestión
+            </CardTitle>
+            <CardDescription>
+              Cuánto costaría lo mismo en cada SIG. Las toneladas se declaran una
+              vez; el costo cambia según el sistema.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Material</TableHead>
+                  <TableHead className="text-right">Toneladas</TableHead>
+                  {byMaterial.systems.map((s) => (
+                    <TableHead key={s} className="text-right">
+                      {s}
+                      {s === byMaterial.referenceSystem && (
+                        <Badge variant="secondary" className="ml-1 text-xs">
+                          ref
+                        </Badge>
+                      )}
+                    </TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {byMaterial.data.map((row) => {
+                  const costs = byMaterial.systems.map(
+                    (s) => row.costsBySig[s] ?? 0
+                  );
+                  const conCosto = costs.filter((c) => c > 0);
+                  const min = conCosto.length ? Math.min(...conCosto) : 0;
+                  return (
+                    <TableRow key={row.material}>
+                      <TableCell className="font-medium">
+                        {row.material}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {uf(row.tons)}
+                      </TableCell>
+                      {byMaterial.systems.map((s) => {
+                        const c = row.costsBySig[s] ?? 0;
+                        return (
+                          <TableCell
+                            key={s}
+                            className={`text-right font-mono ${
+                              c > 0 && c === min
+                                ? "text-emerald-600 dark:text-emerald-400 font-semibold"
+                                : ""
+                            }`}
+                          >
+                            {c > 0 ? uf(c) : "—"}
+                          </TableCell>
+                        );
+                      })}
+                    </TableRow>
+                  );
+                })}
+                <TableRow className="border-t-2 font-semibold">
+                  <TableCell>TOTAL</TableCell>
+                  <TableCell className="text-right font-mono">
+                    {uf(byMaterial.data.reduce((a, r) => a + r.tons, 0))}
+                  </TableCell>
+                  {byMaterial.systems.map((s) => (
+                    <TableCell key={s} className="text-right font-mono">
+                      UF{" "}
+                      {uf(
+                        byMaterial.data.reduce(
+                          (a, r) => a + (r.costsBySig[s] ?? 0),
+                          0
+                        )
+                      )}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              </TableBody>
+            </Table>
+            <p className="mt-3 text-xs text-muted-foreground">
+              En verde, el SIG más económico de cada material. Un material en
+              “—” no tiene tarifa asignada en ese sistema, así que su tonelaje no
+              está cubierto.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Evolución mensual — lo que pidieron: el mes y el acumulado a la fecha */}
+      {evolution && evolution.series.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">Evolución mensual</CardTitle>
+            <CardDescription>
+              Declarado mes a mes y acumulado a la fecha. Las empresas declaran
+              con desfase de 1 o 2 meses según el segmento.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {evolution.series.map((serie) => (
+              <div key={serie.systemName}>
+                <p className="mb-2 text-sm font-medium">
+                  {serie.systemName}
+                  <span className="ml-2 font-normal text-muted-foreground">
+                    {uf(serie.totalTons)} ton · UF {uf(serie.totalCostUf)} en el
+                    año
+                  </span>
+                </p>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Mes</TableHead>
+                        <TableHead className="text-right">Toneladas</TableHead>
+                        <TableHead className="text-right">Costo UF</TableHead>
+                        <TableHead className="text-right">
+                          Ton. acumuladas
+                        </TableHead>
+                        <TableHead className="text-right">
+                          UF acumuladas
+                        </TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {serie.points.map((p) => (
+                        <TableRow key={p.month}>
+                          <TableCell className="capitalize">
+                            {p.month === 0
+                              ? "Anual"
+                              : MONTH_NAMES[p.month - 1]}
+                          </TableCell>
+                          <TableCell className="text-right font-mono">
+                            {uf(p.tons)}
+                          </TableCell>
+                          <TableCell className="text-right font-mono">
+                            {uf(p.costUf)}
+                          </TableCell>
+                          <TableCell className="text-right font-mono text-muted-foreground">
+                            {uf(p.accTons)}
+                          </TableCell>
+                          <TableCell className="text-right font-mono text-muted-foreground">
+                            {uf(p.accCostUf)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Quick Stats */}
       {allProducts.length > 0 && (
