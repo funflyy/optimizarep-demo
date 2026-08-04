@@ -32,6 +32,15 @@ export interface ParsedPiece {
 export interface ParsedSale {
   year: number;
   month: number;
+  /**
+   * Segmento al que aplican estas unidades.
+   *
+   * En un mismo mes un SKU trae dos cifras: las unidades de venta al detalle
+   * y los pallets o cajas que las transportan. Antes se guardaba una sola por
+   * mes (la del detalle) y se aplicaba a todas las piezas, lo que inflaba el
+   * tonelaje no domiciliario ~150 veces.
+   */
+  segment: "Domiciliario" | "No Domiciliario";
   unitsSold: number;
 }
 
@@ -48,12 +57,12 @@ export interface ParsedProduct {
   warnings: string[];
 }
 
-/** Ventas de un período antes de resolver el valor definitivo */
+/** Ventas de un período y segmento, antes de resolver el valor definitivo */
 interface PeriodTally {
   year: number;
   month: number;
-  domiciliary: number[];
-  all: number[];
+  segment: "Domiciliario" | "No Domiciliario";
+  units: number[];
 }
 
 const DEFAULT_YEAR = 2025;
@@ -202,14 +211,17 @@ export function parseProductsSheet(
     const units = Math.round(parseDecimal(pick(row, "Ventas", "Unidades")));
 
     if (units > 0) {
-      const periodKey = `${year}-${month}`;
+      // Las unidades se agrupan por segmento: en un mismo mes el detalle y el
+      // transporte traen cifras distintas y no son intercambiables.
+      const segment: ParsedSale["segment"] = isDomiciliary
+        ? "Domiciliario"
+        : "No Domiciliario";
+      const periodKey = `${year}-${month}-${segment}`;
       const byPeriod = periods.get(sku)!;
       if (!byPeriod.has(periodKey)) {
-        byPeriod.set(periodKey, { year, month, domiciliary: [], all: [] });
+        byPeriod.set(periodKey, { year, month, segment, units: [] });
       }
-      const tally = byPeriod.get(periodKey)!;
-      tally.all.push(units);
-      if (isDomiciliary) tally.domiciliary.push(units);
+      byPeriod.get(periodKey)!.units.push(units);
     }
   }
 
@@ -218,16 +230,17 @@ export function parseProductsSheet(
     const byPeriod = periods.get(prod.sku)!;
 
     for (const tally of byPeriod.values()) {
-      // Se prefieren las filas domiciliarias: son unidades de venta al detalle.
-      // Las NO DOM / terciarias cuentan pallets o cajas, no unidades vendidas.
-      const pool = tally.domiciliary.length > 0 ? tally.domiciliary : tally.all;
-      const units = modeOrMax(pool);
+      // Dentro de un mismo período y segmento la cifra se repite en cada fila
+      // de pieza; la moda descarta un valor tipeado mal en una sola fila.
+      const units = modeOrMax(tally.units);
       if (units === undefined) continue;
 
-      const distinct = new Set(pool);
+      const distinct = new Set(tally.units);
       if (distinct.size > 1) {
         prod.warnings.push(
-          `${periodLabel(tally)}: ventas inconsistentes (${[...distinct]
+          `${periodLabel(tally)} · ${tally.segment}: ventas inconsistentes (${[
+            ...distinct,
+          ]
             .map((v) => v.toLocaleString("es-CL"))
             .join(" / ")}), se usó ${units.toLocaleString("es-CL")}`
         );
@@ -236,10 +249,16 @@ export function parseProductsSheet(
       prod.sales.push({
         year: tally.year,
         month: tally.month,
+        segment: tally.segment,
         unitsSold: units,
       });
     }
-    prod.sales.sort((a, b) => a.year - b.year || a.month - b.month);
+    prod.sales.sort(
+      (a, b) =>
+        a.year - b.year ||
+        a.month - b.month ||
+        a.segment.localeCompare(b.segment)
+    );
 
     const dup = duplicateRows.get(prod.sku);
     if (dup) prod.warnings.push(`${dup} fila(s) duplicada(s) ignorada(s)`);
