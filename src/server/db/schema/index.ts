@@ -122,6 +122,20 @@ export const products = pgTable(
     brand: varchar("brand", { length: 255 }),
     category: varchar("category", { length: 255 }),
     subcategory: varchar("subcategory", { length: 255 }),
+    /** Familia comercial del producto (ej: Lácteos, Bebidas) */
+    family: varchar("family", { length: 255 }),
+    /** Subfamilia comercial (ej: Yogurts, Quesos) */
+    subfamily: varchar("subfamily", { length: 255 }),
+    /**
+     * ¿Este SKU replica el envase de otro?
+     *
+     * Ya existía a nivel de pieza; a nivel de SKU permite medir la proporción
+     * de réplicas del catálogo, que MB quiere vigilar: sobre cierto umbral
+     * conviene revisar si se replicó sin verificar las condiciones de envasado.
+     */
+    isReplica: boolean("is_replica").default(false).notNull(),
+    /** SKU del que se replicó el envase */
+    originalSku: varchar("original_sku", { length: 100 }),
     /** Tipo de Producto Prioritario REP (legacy — migrar a priorityProductId) */
     productType: productTypeEnum("product_type").default("envases_embalajes").notNull(),
     /** Producto Prioritario REP (texto libre legacy) */
@@ -188,6 +202,27 @@ export const productPieces = pgTable(
     /** ¿Es réplica de otro SKU? */
     isReplica: boolean("is_replica").default(false).notNull(),
     originalSku: varchar("original_sku", { length: 100 }),
+    /**
+     * Materiales fuera del régimen REP (madera reutilizable, y otros que la ley
+     * no afecta). Se declaran, pero no pagan tarifa: sin esta marca quedaban
+     * como "sin mapear", indistinguibles de un error de configuración.
+     */
+    notSubjectToRep: boolean("not_subject_to_rep").default(false).notNull(),
+    exemptionReason: varchar("exemption_reason", { length: 255 }),
+    /**
+     * Material reciclado incorporado. Hoy es informativo: cuando exista el
+     * descuento en tarifa, solo aplicará al de origen nacional.
+     */
+    hasRecycledMaterial: boolean("has_recycled_material")
+      .default(false)
+      .notNull(),
+    /** % de material reciclado en la pieza (0-100) */
+    recycledPercentage: decimal("recycled_percentage", {
+      precision: 5,
+      scale: 2,
+    }),
+    /** 'nacional' | 'importado' — solo el nacional dará descuento */
+    recycledOrigin: varchar("recycled_origin", { length: 20 }),
     /** Categoría legal REP (A/B, DOM/NO DOM, Cat.1-6, AIT/PFV...) */
     repCategoryId: uuid("rep_category_id").references(() => repCategories.id),
     /** Categoría homologada de red (para tarifas y drill-down) */
@@ -656,6 +691,106 @@ export const declarations = pgTable(
 );
 
 // ═══════════════════════════════════════════════════════════════
+// LER — Listado Europeo de Residuos, para la gestión industrial
+// ═══════════════════════════════════════════════════════════════
+
+export const lerCodes = pgTable("ler_codes", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  /** Código LER: '15 01 01', '20 01 39'... */
+  code: varchar("code", { length: 20 }).notNull().unique(),
+  description: varchar("description", { length: 255 }).notNull(),
+  isActive: boolean("is_active").default(true).notNull(),
+  sortOrder: integer("sort_order").default(0).notNull(),
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Gestión Industrial ("Patio Trasero") — Residuos que el productor
+// entrega a gestores y declara al SINADER. Se alimenta aparte de la
+// línea base de envases: no es puesta en mercado, es retiro de residuo.
+// ═══════════════════════════════════════════════════════════════
+
+export const industrialWaste = pgTable(
+  "industrial_waste",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .references(() => organizations.id, { onDelete: "cascade" })
+      .notNull(),
+    /** Fecha del retiro */
+    wasteDate: timestamp("waste_date").notNull(),
+    year: integer("year").notNull(),
+    /** 1-12 */
+    month: integer("month").notNull(),
+    lerCodeId: uuid("ler_code_id").references(() => lerCodes.id),
+    /** Código LER tal como se declara, por si el catálogo cambia */
+    lerCode: varchar("ler_code", { length: 20 }).notNull(),
+    /** Descripción del residuo */
+    wasteName: varchar("waste_name", { length: 255 }).notNull(),
+    /** RUT del gestor que recibe */
+    handlerRut: varchar("handler_rut", { length: 20 }),
+    handlerName: varchar("handler_name", { length: 255 }),
+    /** Planta de destino */
+    destinationPlant: varchar("destination_plant", { length: 255 }),
+    /** ID de Ventanilla Única */
+    singleWindowId: varchar("single_window_id", { length: 50 }),
+    /** Código de tratamiento (ej: 19 = reciclaje de vidrio) */
+    treatmentCode: varchar("treatment_code", { length: 20 }),
+    treatmentDescription: varchar("treatment_description", { length: 255 }),
+    /** Kilos totales entregados */
+    totalKg: decimal("total_kg", { precision: 14, scale: 3 }).notNull(),
+    observations: text("observations"),
+    createdBy: uuid("created_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("industrial_waste_org_period_idx").on(
+      table.organizationId,
+      table.year,
+      table.month
+    ),
+  ]
+);
+
+// ═══════════════════════════════════════════════════════════════
+// Escenarios de simulación — para comparar varias alternativas de
+// ecodiseño en vez de ir de una en una
+// ═══════════════════════════════════════════════════════════════
+
+export const simulationScenarios = pgTable(
+  "simulation_scenarios",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .references(() => organizations.id, { onDelete: "cascade" })
+      .notNull(),
+    name: varchar("name", { length: 255 }).notNull(),
+    notes: text("notes"),
+    /** SKU sobre el que se simula */
+    sku: varchar("sku", { length: 100 }).notNull(),
+    year: integer("year").notNull(),
+    /** Cambios aplicados: pieza, peso nuevo, material nuevo, volumen */
+    changes: jsonb("changes").$type<{
+      pieceName?: string;
+      materialDetail?: string;
+      newWeightGrams?: number;
+      newMaterialDetail?: string;
+      newUnitsSold?: number;
+    }>(),
+    /** Resultado calculado al guardar, por SIG */
+    results: jsonb("results").$type<
+      { systemName: string; tons: number; costUf: number }[]
+    >(),
+    createdBy: uuid("created_by").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("scenarios_org_sku_idx").on(table.organizationId, table.sku),
+  ]
+);
+
+// ═══════════════════════════════════════════════════════════════
 // Audit Log — Trazabilidad de cambios (auditoría de datos cargados)
 // ═══════════════════════════════════════════════════════════════
 
@@ -805,6 +940,42 @@ export const organizationPriorityProductsRelations = relations(
     activeSystem: one(managementSystems, {
       fields: [organizationPriorityProducts.activeSystemId],
       references: [managementSystems.id],
+    }),
+  })
+);
+
+export const lerCodesRelations = relations(lerCodes, ({ many }) => ({
+  wasteRecords: many(industrialWaste),
+}));
+
+export const industrialWasteRelations = relations(
+  industrialWaste,
+  ({ one }) => ({
+    organization: one(organizations, {
+      fields: [industrialWaste.organizationId],
+      references: [organizations.id],
+    }),
+    lerCodeRef: one(lerCodes, {
+      fields: [industrialWaste.lerCodeId],
+      references: [lerCodes.id],
+    }),
+    creator: one(users, {
+      fields: [industrialWaste.createdBy],
+      references: [users.id],
+    }),
+  })
+);
+
+export const simulationScenariosRelations = relations(
+  simulationScenarios,
+  ({ one }) => ({
+    organization: one(organizations, {
+      fields: [simulationScenarios.organizationId],
+      references: [organizations.id],
+    }),
+    creator: one(users, {
+      fields: [simulationScenarios.createdBy],
+      references: [users.id],
     }),
   })
 );
