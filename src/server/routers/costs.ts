@@ -566,11 +566,25 @@ export const costsRouter = createTRPCRouter({
         .extend({
           limit: z.number().int().min(1).max(50).default(10),
           targetSystem: z.string().optional(),
+          /**
+           * Ordenar por costo total o por costo unitario (UF/ton).
+           *
+           * Por total siempre ganan los SKU de mayor volumen, que es
+           * información pobre para priorizar ecodiseño: dice cuánto pesan en la
+           * factura, no cuán ineficiente es su envase. El factor UF/ton
+           * normaliza y hace comparables SKU de volúmenes muy distintos.
+           */
+          sortBy: z.enum(["costTotal", "costPerTon"]).default("costTotal"),
         })
         .optional()
     )
     .query(async ({ ctx, input }) => {
-      const { limit = 10, targetSystem, ...filters } = input ?? {};
+      const {
+        limit = 10,
+        targetSystem,
+        sortBy = "costTotal",
+        ...filters
+      } = input ?? {};
       const rows = await getCostRows(ctx.orgDbId, filters);
 
       // Filtrar a un solo SIG si se especifica
@@ -609,13 +623,23 @@ export const costsRouter = createTRPCRouter({
         }
       }
 
-      const ranked = Array.from(skuMap.values())
-        .map((s) => ({
-          ...s,
-          tons: Math.round(s.tons * 100) / 100,
-          costUf: Math.round(s.costUf * 100) / 100,
-        }))
-        .sort((a, b) => b.costUf - a.costUf)
+      const conFactor = Array.from(skuMap.values()).map((s) => ({
+        ...s,
+        tons: Math.round(s.tons * 100) / 100,
+        costUf: Math.round(s.costUf * 100) / 100,
+        /**
+         * Factor de costo: UF por tonelada declarada. Es la tarifa promedio
+         * ponderada del envase, independiente del volumen vendido.
+         */
+        costPerTon: s.tons > 0 ? Math.round((s.costUf / s.tons) * 100) / 100 : 0,
+      }));
+
+      const ranked = conFactor
+        .sort((a, b) =>
+          sortBy === "costPerTon"
+            ? b.costPerTon - a.costPerTon
+            : b.costUf - a.costUf
+        )
         .slice(0, limit);
 
       return ranked;

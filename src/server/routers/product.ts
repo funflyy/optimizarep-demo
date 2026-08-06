@@ -7,8 +7,11 @@ import {
   productPieces,
   salesRecords,
   productTypeEnum,
+  auditLog,
+  users,
 } from "@/server/db/schema";
-import { eq, and, sql, asc, inArray } from "drizzle-orm";
+import { eq, and, sql, asc, desc, inArray } from "drizzle-orm";
+import { recordAudit } from "@/server/audit";
 
 /** Validación de una pieza/componente */
 const pieceSchema = z.object({
@@ -224,7 +227,7 @@ export const productRouter = createTRPCRouter({
       const { priorityProductId, productType, salesUnit } =
         await resolvePriorityProduct(ctx.db, priorityProductCode);
 
-      return ctx.db.transaction(async (tx) => {
+      const created = await ctx.db.transaction(async (tx) => {
         const [product] = await tx
           .insert(products)
           .values({
@@ -266,6 +269,23 @@ export const productRouter = createTRPCRouter({
 
         return product;
       });
+
+      // Respaldo de quién creó el SKU y cuándo: es parte de lo declarado
+      await recordAudit(ctx.db, {
+        organizationId: orgId,
+        userId: ctx.user.id,
+        entity: "products",
+        entityId: created.id,
+        action: "create",
+        changes: {
+          sku: created.sku,
+          name: created.name,
+          pieces: pieces.length,
+          periodos: sales?.length ?? 0,
+        },
+      });
+
+      return created;
     }),
 
   /** Actualizar producto con piezas — verifica ownership */
@@ -296,7 +316,13 @@ export const productRouter = createTRPCRouter({
       const { priorityProductId, productType, salesUnit } =
         await resolvePriorityProduct(ctx.db, priorityProductCode);
 
-      return ctx.db.transaction(async (tx) => {
+      // Estado anterior, para poder mostrar qué cambió
+      const before = await ctx.db.query.products.findFirst({
+        where: (p, { eq: _eq }) => _eq(p.id, input.id),
+        with: { pieces: true },
+      });
+
+      const updated = await ctx.db.transaction(async (tx) => {
         const [product] = await tx
           .update(products)
           .set({
@@ -372,6 +398,40 @@ export const productRouter = createTRPCRouter({
 
         return product;
       });
+
+      // Respaldo del cambio: quién, cuándo y qué campos se movieron
+      const cambios: Record<string, unknown> = { sku: updated.sku };
+      if (before) {
+        for (const campo of [
+          "name",
+          "brand",
+          "category",
+          "subcategory",
+          "family",
+          "subfamily",
+        ] as const) {
+          if (before[campo] !== updated[campo]) {
+            cambios[campo] = { antes: before[campo], ahora: updated[campo] };
+          }
+        }
+        if (before.pieces.length !== pieces.length) {
+          cambios.piezas = {
+            antes: before.pieces.length,
+            ahora: pieces.length,
+          };
+        }
+      }
+
+      await recordAudit(ctx.db, {
+        organizationId: updated.organizationId,
+        userId: ctx.user.id,
+        entity: "products",
+        entityId: updated.id,
+        action: "update",
+        changes: cambios,
+      });
+
+      return updated;
     }),
 
   /**
@@ -430,7 +490,7 @@ export const productRouter = createTRPCRouter({
         });
       }
 
-      return ctx.db.transaction(async (tx) => {
+      const resultado = await ctx.db.transaction(async (tx) => {
         await tx
           .delete(productPieces)
           .where(eq(productPieces.productId, target.id));
@@ -460,26 +520,107 @@ export const productRouter = createTRPCRouter({
           }))
         );
 
+        // La réplica también queda marcada en el producto, no solo en las
+        // piezas: así se puede medir la proporción de réplicas del catálogo
+        await tx
+          .update(products)
+          .set({
+            isReplica: true,
+            originalSku: source.sku,
+            updatedAt: new Date(),
+          })
+          .where(eq(products.id, target.id));
+
         return {
           targetSku: target.sku,
           sourceSku: source.sku,
           piecesCopied: source.pieces.length,
         };
       });
+
+      await recordAudit(ctx.db, {
+        organizationId: orgId,
+        userId: ctx.user.id,
+        entity: "products",
+        entityId: input.targetProductId,
+        action: "update",
+        changes: {
+          sku: resultado.targetSku,
+          replicaDe: resultado.sourceSku,
+          piezasCopiadas: resultado.piecesCopied,
+        },
+      });
+
+      return resultado;
+    }),
+
+  /**
+   * Historial de cambios de la organización.
+   *
+   * MB necesita poder mostrar que fue el cliente quien creó o modificó un SKU,
+   * con fecha y hora, porque eso respalda lo declarado.
+   */
+  auditTrail: orgProcedure
+    .input(
+      z
+        .object({
+          entity: z.string().optional(),
+          limit: z.number().int().min(1).max(200).default(50),
+        })
+        .optional()
+    )
+    .query(async ({ ctx, input }) => {
+      const { entity, limit = 50 } = input ?? {};
+      const rows = await ctx.db
+        .select({
+          id: auditLog.id,
+          entity: auditLog.entity,
+          entityId: auditLog.entityId,
+          action: auditLog.action,
+          changes: auditLog.changes,
+          createdAt: auditLog.createdAt,
+          userEmail: users.email,
+          userFirstName: users.firstName,
+          userLastName: users.lastName,
+        })
+        .from(auditLog)
+        .leftJoin(users, eq(users.id, auditLog.userId))
+        .where(
+          and(
+            ctx.orgDbId ? eq(auditLog.organizationId, ctx.orgDbId) : undefined,
+            entity ? eq(auditLog.entity, entity) : undefined
+          )
+        )
+        .orderBy(desc(auditLog.createdAt))
+        .limit(limit);
+      return rows;
     }),
 
   /** Eliminar producto — verifica ownership */
   delete: orgProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
-      await ctx.db
+      const [borrado] = await ctx.db
         .delete(products)
         .where(
           and(
             eq(products.id, input.id),
             ctx.orgDbId ? eq(products.organizationId, ctx.orgDbId) : undefined
           )
-        );
+        )
+        .returning();
+
+      if (borrado) {
+        await recordAudit(ctx.db, {
+          organizationId: borrado.organizationId,
+          userId: ctx.user.id,
+          entity: "products",
+          entityId: borrado.id,
+          action: "delete",
+          changes: { sku: borrado.sku, name: borrado.name },
+        });
+      }
+
       return { success: true };
     }),
 });

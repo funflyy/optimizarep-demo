@@ -51,6 +51,10 @@ export default function CostsPage() {
   const [sig, setSig] = useState<string>("all");
   /** Período: todo el año, un mes puntual, o acumulado a un mes */
   const [period, setPeriod] = useState<string>(ALL_MONTHS);
+  /** Cómo ordenar el Top de SKU: por factura o por eficiencia del envase */
+  const [skuSort, setSkuSort] = useState<"costTotal" | "costPerTon">(
+    "costTotal"
+  );
   const productType = useProductType();
 
   const filters = useMemo(
@@ -75,8 +79,11 @@ export default function CostsPage() {
     trpc.costs.byMaterial.useQuery(filters);
   const { data: byBrand, isLoading: brandLoading } =
     trpc.costs.byBrand.useQuery(filters);
-  const { data: topSkus, isLoading: topLoading } =
-    trpc.costs.topSkus.useQuery({ ...filters, limit: 10 });
+  const { data: topSkus, isLoading: topLoading } = trpc.costs.topSkus.useQuery({
+    ...filters,
+    limit: 10,
+    sortBy: skuSort,
+  });
 
   const isFiltered = year !== "all" || brand !== "all" || category !== "all" || materialClass !== "all" || sig !== "all";
 
@@ -532,16 +539,46 @@ export default function CostsPage() {
         </CardContent>
       </Card>
 
-      {/* Tabla: Top 10 SKUs más costosos */}
+      {/* Tabla: Top 10 SKUs. Se puede ordenar por costo total o por UF/ton:
+          por total siempre ganan los de mayor volumen, que dice cuánto pesan
+          en la factura pero no cuán ineficiente es el envase. */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <TrendingDownIcon className="h-5 w-5 text-amber-600" />
-            Top 10 SKUs Más Costosos
-          </CardTitle>
-          <CardDescription>
-            Los productos que más contribuyen al costo REP
-          </CardDescription>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <TrendingDownIcon className="h-5 w-5 text-amber-600" />
+                Top 10 SKUs
+              </CardTitle>
+              <CardDescription>
+                {skuSort === "costTotal"
+                  ? "Los que más contribuyen al costo total. Dominan los de mayor volumen."
+                  : "Los de envase más caro por tonelada, comparables entre sí sin importar el volumen."}
+              </CardDescription>
+            </div>
+            <div className="flex items-center gap-1 rounded-lg border p-1 bg-muted/30">
+              <button
+                onClick={() => setSkuSort("costTotal")}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                  skuSort === "costTotal"
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Costo total
+              </button>
+              <button
+                onClick={() => setSkuSort("costPerTon")}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                  skuSort === "costPerTon"
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                UF por tonelada
+              </button>
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
           {topLoading ? (
@@ -561,6 +598,7 @@ export default function CostsPage() {
                   <TableHead>Material</TableHead>
                   <TableHead className="text-right">Ton.</TableHead>
                   <TableHead className="text-right">Costo (UF)</TableHead>
+                  <TableHead className="text-right">UF/ton</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -578,8 +616,15 @@ export default function CostsPage() {
                     <TableCell className="text-right">
                       {row.tons.toLocaleString("es-CL")}
                     </TableCell>
-                    <TableCell className="text-right font-semibold">
+                    <TableCell
+                      className={`text-right ${skuSort === "costTotal" ? "font-semibold" : ""}`}
+                    >
                       {row.costUf.toLocaleString("es-CL")}
+                    </TableCell>
+                    <TableCell
+                      className={`text-right font-mono ${skuSort === "costPerTon" ? "font-semibold" : "text-muted-foreground"}`}
+                    >
+                      {row.costPerTon.toLocaleString("es-CL")}
                     </TableCell>
                   </TableRow>
                 ))}
