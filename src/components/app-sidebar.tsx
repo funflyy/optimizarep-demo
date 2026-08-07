@@ -25,6 +25,7 @@ import {
   LightbulbIcon,
   BuildingIcon,
   Building2Icon,
+  RecycleIcon,
 } from "lucide-react";
 import Image from "next/image";
 import { trpc } from "@/lib/trpc";
@@ -57,6 +58,13 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       title: "Oportunidades",
       url: "/opportunities",
       icon: (<LightbulbIcon />),
+    },
+    {
+      // Residuos entregados a gestores. Se declara al SINADER y es
+      // independiente de la línea base de envases.
+      title: "Gestión Industrial",
+      url: "/industrial-waste",
+      icon: (<RecycleIcon />),
     },
     {
       title: "Configuración",

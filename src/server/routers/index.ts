@@ -9,6 +9,7 @@ import { dashboardChartsRouter } from "./dashboard-charts";
 import { superAdminRouter } from "./_superadmin";
 import { enterpriseRouter } from "./_enterprise";
 import { authRouter } from "./auth";
+import { industrialWasteRouter } from "./industrial-waste";
 
 /**
  * Root router — agrega subrouters aquí.
@@ -24,6 +25,7 @@ export const appRouter = createTRPCRouter({
   dashboardCharts: dashboardChartsRouter,
   superadmin: superAdminRouter,
   enterprise: enterpriseRouter,
+  industrialWaste: industrialWasteRouter,
 });
 
 export type AppRouter = typeof appRouter;
