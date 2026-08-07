@@ -47,6 +47,12 @@ interface PieceForm {
   repCategoryId?: string;
   hasGrease: boolean;
   isHazardous: boolean;
+  /** Fuera del régimen REP: se declara pero no paga tarifa */
+  notSubjectToRep: boolean;
+  exemptionReason: string;
+  /** % de material reciclado incorporado; vacío = no declarado */
+  recycledPercentage: string;
+  recycledOrigin: "" | "nacional" | "importado";
 }
 
 const EMPTY_PIECE: PieceForm = {
@@ -59,6 +65,10 @@ const EMPTY_PIECE: PieceForm = {
   weightNative: 0,
   hasGrease: false,
   isHazardous: false,
+  notSubjectToRep: false,
+  exemptionReason: "",
+  recycledPercentage: "",
+  recycledOrigin: "",
 };
 
 // ── Materiales de envases (D.S. 12/2020) ──
@@ -119,6 +129,8 @@ export function ProductForm() {
   const [name, setName] = useState("");
   const [brand, setBrand] = useState("");
   const [category, setCategory] = useState("");
+  const [family, setFamily] = useState("");
+  const [subfamily, setSubfamily] = useState("");
   const [observations, setObservations] = useState("");
   const [unitsSold, setUnitsSold] = useState<number | undefined>();
   const [salesYear, setSalesYear] = useState(2026);
@@ -170,6 +182,8 @@ export function ProductForm() {
       name,
       brand: brand || undefined,
       category: category || undefined,
+      family: family || undefined,
+      subfamily: subfamily || undefined,
       observations: observations || undefined,
       priorityProductCode: ppCode,
       pieces: pieces.map((p) => ({
@@ -185,6 +199,13 @@ export function ProductForm() {
         repCategoryId: p.repCategoryId,
         hasGrease: isEnvases ? p.hasGrease : false,
         isHazardous: p.isHazardous,
+        notSubjectToRep: p.notSubjectToRep,
+        exemptionReason: p.exemptionReason || undefined,
+        hasRecycledMaterial: Number(p.recycledPercentage) > 0,
+        recycledPercentage: p.recycledPercentage
+          ? Number(p.recycledPercentage)
+          : undefined,
+        recycledOrigin: p.recycledOrigin || undefined,
       })),
       unitsSold,
       salesYear: unitsSold ? salesYear : undefined,
@@ -273,6 +294,28 @@ export function ProductForm() {
               value={category}
               onChange={(e) => setCategory(e.target.value)}
               placeholder="Ej: Bebidas, Automotriz..."
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="family">Familia</Label>
+            <Input
+              id="family"
+              value={family}
+              onChange={(e) => setFamily(e.target.value)}
+              placeholder="Ej: Lácteos"
+            />
+            <p className="text-xs text-muted-foreground">
+              Para agrupar el catálogo. Si la dejas vacía se agrupa por la
+              categoría interna.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="subfamily">Subfamilia</Label>
+            <Input
+              id="subfamily"
+              value={subfamily}
+              onChange={(e) => setSubfamily(e.target.value)}
+              placeholder="Ej: Yogurts"
             />
           </div>
           <div className="space-y-2 md:col-span-2">
@@ -602,6 +645,87 @@ export function ProductForm() {
                   </div>
                 </>
               )}
+
+              {/* ── Régimen REP y material reciclado (todos los productos) ── */}
+              <div className="space-y-3 rounded-md border border-dashed p-3">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={piece.notSubjectToRep}
+                    onCheckedChange={(v) =>
+                      updatePiece(idx, {
+                        notSubjectToRep: v,
+                        exemptionReason: v ? piece.exemptionReason : "",
+                      })
+                    }
+                  />
+                  <Label className="text-xs font-normal">
+                    No afecto a REP
+                  </Label>
+                  {piece.notSubjectToRep && (
+                    <Input
+                      className="h-8 max-w-xs text-xs"
+                      value={piece.exemptionReason}
+                      onChange={(e) =>
+                        updatePiece(idx, { exemptionReason: e.target.value })
+                      }
+                      placeholder="Motivo: madera reutilizable, envase retornable..."
+                    />
+                  )}
+                </div>
+                {piece.notSubjectToRep && (
+                  <p className="text-xs text-muted-foreground">
+                    Se declara igual, pero no paga tarifa. Sin esta marca la
+                    pieza aparece como &laquo;sin mapear&raquo; en Riesgos,
+                    indistinguible de un error de configuración.
+                  </p>
+                )}
+
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Material reciclado (%)</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.01"
+                      className="h-8 w-28 text-xs"
+                      value={piece.recycledPercentage}
+                      onChange={(e) =>
+                        updatePiece(idx, { recycledPercentage: e.target.value })
+                      }
+                      placeholder="Ej: 30"
+                    />
+                  </div>
+                  {Number(piece.recycledPercentage) > 0 && (
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Origen</Label>
+                      <Select
+                        value={piece.recycledOrigin || undefined}
+                        onValueChange={(v) =>
+                          updatePiece(idx, {
+                            recycledOrigin: v as "nacional" | "importado",
+                          })
+                        }
+                      >
+                        <SelectTrigger className="h-8 w-40 text-xs">
+                          <SelectValue placeholder="Seleccionar..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="nacional">Nacional</SelectItem>
+                          <SelectItem value="importado">Importado</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                </div>
+                {Number(piece.recycledPercentage) > 0 &&
+                  !piece.recycledOrigin && (
+                    <p className="text-xs text-amber-600 dark:text-amber-500">
+                      Indica el origen: cuando exista el descuento en tarifa
+                      solo aplicará al reciclado nacional.
+                    </p>
+                  )}
+              </div>
             </div>
           ))}
         </CardContent>

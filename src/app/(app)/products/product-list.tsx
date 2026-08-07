@@ -35,15 +35,18 @@ const REPLICA_ALERT_THRESHOLD = 20;
 export function ProductList() {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
+  const [family, setFamily] = useState("all");
   const productType = useProductType();
 
   const { data, isLoading } = trpc.product.list.useQuery({
     search: search || undefined,
     category: category !== "all" ? category : undefined,
+    family: family !== "all" ? family : undefined,
     productType: productType ?? undefined,
   });
 
   const { data: categories = [] } = trpc.product.categories.useQuery();
+  const { data: familyData } = trpc.product.families.useQuery();
   const { data: replicaStats } = trpc.product.replicaStats.useQuery();
 
   const allProducts = data?.products ?? [];
@@ -88,6 +91,8 @@ export function ProductList() {
               Producto: p.name,
               Marca: p.brand || "",
               Categoría: p.category || "",
+              Familia: p.family || p.category || "",
+              Subfamilia: p.subfamily || "",
               Piezas: p.pieces.length,
               "Peso Total (g)": p.pieces.reduce((a, pc) => a + pc.weightGrams, 0).toFixed(1),
               Ventas: p.salesRecords[0]?.unitsSold ?? "",
@@ -97,6 +102,7 @@ export function ProductList() {
             sheetName="Productos"
             scope={{
               Búsqueda: search || null,
+              Familia: family !== "all" ? family : "todas",
               Categoría: category !== "all" ? category : "todas",
               SKUs: allProducts.length,
             }}
@@ -220,6 +226,9 @@ export function ProductList() {
             category={category}
             onSearchChange={setSearch}
             onCategoryChange={setCategory}
+            families={familyData?.hasExplicit ? familyData.values : undefined}
+            family={family}
+            onFamilyChange={setFamily}
           />
         </CardHeader>
         <CardContent>

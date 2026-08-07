@@ -2,6 +2,7 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { createTRPCRouter, orgProcedure } from "@/server/trpc";
 import { resolveTargetOrg } from "@/server/authz";
+import { pieceValues } from "@/server/piece-values";
 import {
   products,
   productPieces,
@@ -30,6 +31,21 @@ const pieceSchema = z.object({
   hasGrease: z.boolean().default(false),
   isHazardous: z.boolean().default(false),
   plasticCharacteristic: z.string().optional(),
+  /**
+   * Fuera del régimen REP (madera reutilizable y otros que la ley no afecta).
+   * Se declara igual, pero no paga tarifa: sin esta marca quedaba como "sin
+   * mapear", indistinguible de un error de configuración.
+   */
+  notSubjectToRep: z.boolean().default(false),
+  exemptionReason: z.string().optional(),
+  /**
+   * Material reciclado incorporado. Hoy es informativo; cuando exista el
+   * descuento en tarifa, solo aplicará al de origen nacional, así que el
+   * origen se registra desde ya.
+   */
+  hasRecycledMaterial: z.boolean().default(false),
+  recycledPercentage: z.number().min(0).max(100).optional(),
+  recycledOrigin: z.enum(["nacional", "importado"]).optional(),
 });
 
 /** Validación de producto completo */
@@ -45,6 +61,18 @@ const productInputSchema = z.object({
   brand: z.string().optional(),
   category: z.string().optional(),
   subcategory: z.string().optional(),
+  /**
+   * Jerarquía comercial para agrupar el catálogo (Lácteos → Yogurts).
+   *
+   * Ni el archivo del cliente ni la plantilla de referencia traen estas
+   * columnas todavía: el LB usa "Departamento" y la plantilla "Categoría" /
+   * "Subcategoría", que se siguen cargando en category/subcategory. Cuando
+   * familia viene vacía, las pantallas agrupan por category, así que agrupar
+   * por familia funciona con los archivos que hoy existen sin duplicar el dato
+   * en la base.
+   */
+  family: z.string().optional(),
+  subfamily: z.string().optional(),
   priorityProduct: z.string().default("Envases y Embalajes"),
   /** Código del producto prioritario del catálogo dinámico */
   priorityProductCode: z.string().optional(),
@@ -112,6 +140,8 @@ export const productRouter = createTRPCRouter({
       z.object({
         search: z.string().optional(),
         category: z.string().optional(),
+        /** Familia comercial; cae en `category` cuando la familia está vacía */
+        family: z.string().optional(),
         /** Filtro por producto prioritario (enum legacy product_type) */
         productType: z.string().optional(),
         page: z.number().int().min(1).default(1),
@@ -119,7 +149,8 @@ export const productRouter = createTRPCRouter({
       }).optional()
     )
     .query(async ({ ctx, input }) => {
-      const { search, category, productType, page = 1, limit = 50 } = input ?? {};
+      const { search, category, family, productType, page = 1, limit = 50 } =
+        input ?? {};
 
       const allProducts = await ctx.db.query.products.findMany({
         with: { pieces: true, salesRecords: true },
@@ -139,6 +170,8 @@ export const productRouter = createTRPCRouter({
             );
           }
           if (category) conditions.push(_eq(p.category, category));
+          if (family)
+            conditions.push(sql`COALESCE(${p.family}, ${p.category}) = ${family}`);
           return _and(...conditions);
         },
         orderBy: (p, { asc }) => [asc(p.sku)],
@@ -193,6 +226,46 @@ export const productRouter = createTRPCRouter({
     return result.map((r) => r.category).filter(Boolean) as string[];
   }),
 
+  /**
+   * Familias para el filtro.
+   *
+   * Cae en `category` cuando la familia está vacía: ni el archivo del cliente
+   * ni la plantilla traen todavía una columna "Familia", así que sin el
+   * fallback el filtro saldría vacío en todos los catálogos que hoy existen.
+   * El dato no se duplica en la base; la equivalencia se resuelve al leer.
+   */
+  families: orgProcedure.query(async ({ ctx }) => {
+    const orgFilter = ctx.orgDbId
+      ? eq(products.organizationId, ctx.orgDbId)
+      : undefined;
+    const effective = sql<string>`COALESCE(${products.family}, ${products.category})`;
+
+    const [values, explicit] = await Promise.all([
+      ctx.db
+        .selectDistinct({ family: effective })
+        .from(products)
+        .where(
+          and(orgFilter, sql`COALESCE(${products.family}, ${products.category}) IS NOT NULL`)
+        )
+        .orderBy(asc(effective)),
+      ctx.db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(products)
+        .where(and(orgFilter, sql`${products.family} IS NOT NULL`)),
+    ]);
+
+    return {
+      values: values.map((r) => r.family).filter(Boolean),
+      /**
+       * false mientras nadie haya cargado una familia explícita. La UI usa esto
+       * para no mostrar un filtro "Familia" que hoy sería idéntico al de
+       * categoría, que es de lo que se quejan los usuarios cuando ven dos
+       * filtros que hacen lo mismo.
+       */
+      hasExplicit: (explicit[0]?.n ?? 0) > 0,
+    };
+  }),
+
   /** Obtener un producto por ID — verifica ownership */
   getById: orgProcedure
     .input(z.object({ id: z.string().uuid() }))
@@ -240,7 +313,7 @@ export const productRouter = createTRPCRouter({
 
         if (pieces.length > 0) {
           await tx.insert(productPieces).values(
-            pieces.map((p) => ({ ...p, productId: product.id }))
+            pieces.map((p) => pieceValues(p, product.id))
           );
         }
 
@@ -353,7 +426,7 @@ export const productRouter = createTRPCRouter({
 
         if (pieces.length > 0) {
           await tx.insert(productPieces).values(
-            pieces.map((p) => ({ ...p, productId: input.id }))
+            pieces.map((p) => pieceValues(p, input.id))
           );
         }
 

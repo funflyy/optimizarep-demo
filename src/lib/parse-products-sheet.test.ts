@@ -26,6 +26,89 @@ function row(over: Record<string, unknown> = {}) {
   };
 }
 
+describe("columnas nuevas (familia, reciclado, no afecto)", () => {
+  it("un archivo sin las columnas nuevas sigue importando igual", () => {
+    // Es el caso de los archivos que el cliente tiene hoy
+    const [p] = parseProductsSheet([row()]);
+    expect(isImportable(p)).toBe(true);
+    expect(p.family).toBeUndefined();
+    expect(p.pieces[0].notSubjectToRep).toBe(false);
+    expect(p.pieces[0].hasRecycledMaterial).toBe(false);
+    expect(p.pieces[0].recycledPercentage).toBeUndefined();
+  });
+
+  it("lee familia y subfamilia cuando vienen", () => {
+    const [p] = parseProductsSheet([
+      row({ Familia: "Lácteos", Subfamilia: "Yogurts" }),
+    ]);
+    expect(p.family).toBe("Lácteos");
+    expect(p.subfamily).toBe("Yogurts");
+  });
+
+  it("marca la pieza no afecta a REP con su motivo", () => {
+    const [p] = parseProductsSheet([
+      row({
+        "No Afecto a REP": "Sí",
+        "Motivo Exención": "Madera reutilizable",
+      }),
+    ]);
+    expect(p.pieces[0].notSubjectToRep).toBe(true);
+    expect(p.pieces[0].exemptionReason).toBe("Madera reutilizable");
+  });
+
+  it("interpreta el % de reciclado escrito como fracción, número o texto", () => {
+    // Celda con formato de porcentaje → xlsx la entrega como fracción
+    const [frac] = parseProductsSheet([row({ "% Material Reciclado": 0.3 })]);
+    expect(frac.pieces[0].recycledPercentage).toBe(30);
+
+    const [entero] = parseProductsSheet([row({ "% Material Reciclado": 30 })]);
+    expect(entero.pieces[0].recycledPercentage).toBe(30);
+
+    const [texto] = parseProductsSheet([row({ "% Material Reciclado": "30%" })]);
+    expect(texto.pieces[0].recycledPercentage).toBe(30);
+
+    // Con el símbolo, un 1 es 1% y no se toca
+    const [uno] = parseProductsSheet([row({ "% Material Reciclado": "1%" })]);
+    expect(uno.pieces[0].recycledPercentage).toBe(1);
+  });
+
+  it("descarta un porcentaje fuera de rango y avisa, en vez de guardarlo", () => {
+    const [p] = parseProductsSheet([row({ "% Material Reciclado": 150 })]);
+    expect(p.pieces[0].recycledPercentage).toBeUndefined();
+    expect(p.pieces[0].hasRecycledMaterial).toBe(false);
+    expect(p.warnings.join(" ")).toContain("fuera de rango");
+    // Sigue siendo importable: el dato accesorio no bloquea el SKU
+    expect(isImportable(p)).toBe(true);
+  });
+
+  it("0% de reciclado no marca la pieza como que lleva reciclado", () => {
+    const [p] = parseProductsSheet([row({ "% Material Reciclado": 0 })]);
+    expect(p.pieces[0].hasRecycledMaterial).toBe(false);
+  });
+
+  it("normaliza el origen del reciclado", () => {
+    const [nac] = parseProductsSheet([
+      row({ "% Material Reciclado": 25, "Origen Reciclado": "Nacional" }),
+    ]);
+    expect(nac.pieces[0].recycledOrigin).toBe("nacional");
+
+    const [imp] = parseProductsSheet([
+      row({ "% Material Reciclado": 25, "Origen Reciclado": "Importado" }),
+    ]);
+    expect(imp.pieces[0].recycledOrigin).toBe("importado");
+  });
+
+  it("dos piezas iguales con distinto % de reciclado no se deduplican", () => {
+    // La deduplicación compara la firma de la pieza; si ignorara el reciclado,
+    // la segunda se perdería como si fuera una fila repetida
+    const [p] = parseProductsSheet([
+      row({ "% Material Reciclado": 10 }),
+      row({ "% Material Reciclado": 40 }),
+    ]);
+    expect(p.pieces).toHaveLength(2);
+  });
+});
+
 describe("normalizeHeader", () => {
   it("iguala cabeceras con espacios, acentos y mayúsculas", () => {
     expect(normalizeHeader("Peso (g)")).toBe("pesog");

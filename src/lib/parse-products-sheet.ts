@@ -27,6 +27,13 @@ export interface ParsedPiece {
   weightGrams: number;
   hasGrease: boolean;
   isHazardous: boolean;
+  /** Fuera del régimen REP: se declara pero no paga tarifa */
+  notSubjectToRep: boolean;
+  exemptionReason?: string;
+  hasRecycledMaterial: boolean;
+  /** 0-100. Solo se informa si la columna trae un valor válido */
+  recycledPercentage?: number;
+  recycledOrigin?: "nacional" | "importado";
 }
 
 export interface ParsedSale {
@@ -49,6 +56,9 @@ export interface ParsedProduct {
   name: string;
   brand: string;
   category: string;
+  /** Jerarquía comercial. Vacía si el archivo no trae las columnas. */
+  family?: string;
+  subfamily?: string;
   pieces: ParsedPiece[];
   sales: ParsedSale[];
   /** Bloquean la importación de este SKU */
@@ -95,6 +105,10 @@ export function parseProductsSheet(
         brand: pickText(row, "Marca"),
         // "Categoría REP" es DOM / NO DOM (segmento), no la categoría comercial
         category: pickText(row, "Departamento", "Categoría", "Categoria"),
+        // Columnas nuevas: los archivos que hay hoy no las traen. Cuando la
+        // familia viene vacía, las pantallas agrupan por `category`.
+        family: pickText(row, "Familia") || undefined,
+        subfamily: pickText(row, "Subfamilia", "Sub Familia") || undefined,
         pieces: [],
         sales: [],
         errors: [],
@@ -171,6 +185,27 @@ export function parseProductsSheet(
 
     const isHazardous = parseBool(pick(row, "Peligroso")) ?? false;
 
+    // ── Columnas nuevas ──────────────────────────────────────────
+    // Ninguna existe todavía en los archivos del cliente. Se leen si vienen y
+    // nunca se exigen: un archivo sin ellas tiene que seguir importando igual.
+    const notSubjectToRep =
+      parseBool(pick(row, "No Afecto a REP", "No Afecto", "Exento REP")) ??
+      false;
+    const exemptionReason =
+      pickText(row, "Motivo Exención", "Motivo Exencion", "Razón Exención") ||
+      undefined;
+
+    const recycled = parseRecycled(
+      pick(row, "% Material Reciclado", "Material Reciclado", "% Reciclado"),
+      pickText(row, "Origen Reciclado", "Origen Material Reciclado")
+    );
+    if (recycled.invalidPercentage !== undefined) {
+      prod.warnings.push(
+        `pieza "${pieceName}": % de material reciclado fuera de rango ` +
+          `(${recycled.invalidPercentage}), se ignoró`
+      );
+    }
+
     if (weight > 0) {
       const key = [
         pieceName,
@@ -182,6 +217,9 @@ export function parseProductsSheet(
         weight,
         hasGrease,
         isHazardous,
+        notSubjectToRep,
+        recycled.percentage ?? "",
+        recycled.origin ?? "",
       ].join("|");
       if (pieceKeys.get(sku)!.has(key)) {
         duplicateRows.set(sku, (duplicateRows.get(sku) ?? 0) + 1);
@@ -197,6 +235,11 @@ export function parseProductsSheet(
           weightGrams: weight,
           hasGrease,
           isHazardous,
+          notSubjectToRep,
+          exemptionReason,
+          hasRecycledMaterial: (recycled.percentage ?? 0) > 0,
+          recycledPercentage: recycled.percentage,
+          recycledOrigin: recycled.origin,
         });
       }
     } else {
@@ -269,6 +312,50 @@ export function parseProductsSheet(
   }
 
   return [...productMap.values()];
+}
+
+/**
+ * Material reciclado: porcentaje y origen.
+ *
+ * El porcentaje llega en dos convenciones distintas según cómo se haya
+ * formateado la celda. Una celda con formato de porcentaje se lee como fracción
+ * (0,3 = 30%); escrito a mano llega como número (30) o como texto ("30%").
+ *
+ * Regla: con el símbolo % el número va tal cual; sin él, un valor de 1 o menos
+ * se toma como fracción. Un 1 pelado queda entonces en 100%, que es lo correcto
+ * para una celda con formato de porcentaje y es la lectura más probable —
+ * declarar exactamente 1% de reciclado es raro, y la diferencia salta a la
+ * vista en la previsualización antes de importar.
+ */
+function parseRecycled(
+  rawPercentage: unknown,
+  rawOrigin: string
+): {
+  percentage?: number;
+  origin?: "nacional" | "importado";
+  /** Valor descartado por estar fuera de 0-100, para avisar */
+  invalidPercentage?: number;
+} {
+  const o = rawOrigin.toLowerCase();
+  const origin = o.startsWith("nac")
+    ? ("nacional" as const)
+    : o.startsWith("imp") || o.startsWith("ext")
+      ? ("importado" as const)
+      : undefined;
+
+  if (rawPercentage === null || rawPercentage === undefined || rawPercentage === "") {
+    return { origin };
+  }
+
+  const text = String(rawPercentage);
+  const explicitPercent = text.includes("%");
+  let n = parseDecimal(text.replace("%", ""));
+
+  if (!explicitPercent && n > 0 && n <= 1) n *= 100;
+
+  if (n < 0 || n > 100) return { origin, invalidPercentage: n };
+
+  return { percentage: Math.round(n * 100) / 100, origin };
 }
 
 function resolveDomiciliary(segment: string, explicit: unknown): boolean {
