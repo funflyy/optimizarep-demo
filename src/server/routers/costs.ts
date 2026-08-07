@@ -26,7 +26,9 @@ import {
   ufValues,
   priorityProducts,
   productTypeEnum,
+  simulationScenarios,
 } from "@/server/db/schema";
+import { TRPCError } from "@trpc/server";
 import { eq, and, or, isNull, sql, asc, desc } from "drizzle-orm";
 
 // ── Types ────────────────────────────────────────────────────────
@@ -643,6 +645,113 @@ export const costsRouter = createTRPCRouter({
         .slice(0, limit);
 
       return ranked;
+    }),
+
+  /**
+   * Escenarios guardados.
+   *
+   * MB pidió poder guardar y comparar varias alternativas de ecodiseño en vez
+   * de ir de una en una. Se guarda la DEFINICIÓN del cambio, no solo el
+   * resultado: la comparación recalcula con `simulate`, así los números no
+   * quedan obsoletos si cambian las tarifas o el mapeo.
+   *
+   * `results` guarda además una foto del momento en que se creó, para poder
+   * mostrar si algo cambió desde entonces.
+   */
+  listScenarios: orgProcedure
+    .input(z.object({ sku: z.string().optional() }).optional())
+    .query(async ({ ctx, input }) => {
+      return ctx.db
+        .select()
+        .from(simulationScenarios)
+        .where(
+          and(
+            ctx.orgDbId
+              ? eq(simulationScenarios.organizationId, ctx.orgDbId)
+              : undefined,
+            input?.sku ? eq(simulationScenarios.sku, input.sku) : undefined
+          )
+        )
+        .orderBy(desc(simulationScenarios.createdAt));
+    }),
+
+  saveScenario: orgProcedure
+    .input(
+      z.object({
+        name: z.string().min(1, "Ponle un nombre al escenario"),
+        notes: z.string().optional(),
+        sku: z.string().min(1),
+        year: z.number().int(),
+        changes: z.object({
+          pieceName: z.string().optional(),
+          materialDetail: z.string().optional(),
+          newWeightGrams: z.number().positive().optional(),
+          newMaterialDetail: z.string().optional(),
+          newUnitsSold: z.number().int().positive().optional(),
+        }),
+        /** Foto del resultado al guardar, para detectar cambios posteriores */
+        results: z
+          .array(
+            z.object({
+              systemName: z.string(),
+              tons: z.number(),
+              costUf: z.number(),
+            })
+          )
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (!ctx.orgDbId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Sin organización activa",
+        });
+      }
+
+      const tieneCambios =
+        input.changes.newWeightGrams !== undefined ||
+        input.changes.newMaterialDetail !== undefined ||
+        input.changes.newUnitsSold !== undefined;
+      if (!tieneCambios) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "El escenario no cambia nada: modifica peso, material o volumen antes de guardarlo",
+        });
+      }
+
+      const [row] = await ctx.db
+        .insert(simulationScenarios)
+        .values({
+          organizationId: ctx.orgDbId,
+          name: input.name,
+          notes: input.notes ?? null,
+          sku: input.sku,
+          year: input.year,
+          changes: input.changes,
+          results: input.results ?? null,
+          createdBy: ctx.user.id,
+        })
+        .returning();
+
+      return row;
+    }),
+
+  deleteScenario: orgProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      await ctx.db
+        .delete(simulationScenarios)
+        .where(
+          and(
+            eq(simulationScenarios.id, input.id),
+            ctx.orgDbId
+              ? eq(simulationScenarios.organizationId, ctx.orgDbId)
+              : undefined
+          )
+        );
+      return { success: true };
     }),
 
   /**
