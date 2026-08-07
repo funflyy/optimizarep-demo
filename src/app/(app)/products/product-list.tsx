@@ -24,6 +24,14 @@ import { ProductRow } from "./product-row";
 import { ProductFilters } from "./product-filters";
 import { ExcelExportButton } from "@/components/excel-export-button";
 import { useProductType } from "@/hooks/use-product-type";
+import { DuplicateSkuDialog } from "./duplicate-sku-dialog";
+
+/**
+ * Sobre este porcentaje de réplicas conviene revisar el catálogo: puede que se
+ * duplicaran SKU sin verificar que comparten las condiciones de envasado.
+ * El umbral lo definió MB.
+ */
+const REPLICA_ALERT_THRESHOLD = 20;
 
 export function ProductList() {
   const [search, setSearch] = useState("");
@@ -37,6 +45,7 @@ export function ProductList() {
   });
 
   const { data: categories = [] } = trpc.product.categories.useQuery();
+  const { data: replicaStats } = trpc.product.replicaStats.useQuery();
 
   const allProducts = data?.products ?? [];
 
@@ -86,6 +95,13 @@ export function ProductList() {
             }))}
             filename="productos_optimizarep"
           />
+          <DuplicateSkuDialog
+            sources={replicaCandidates.map((c) => ({
+              sku: c.sku,
+              name: c.name,
+              pieceCount: c.pieceCount,
+            }))}
+          />
           <Button variant="outline" size="sm" asChild>
             <Link href="/products/import">
               <UploadIcon className="mr-2 h-4 w-4" />
@@ -102,7 +118,7 @@ export function ProductList() {
       </div>
 
       {/* Stats */}
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-4">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -111,6 +127,44 @@ export function ProductList() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{allProducts.length}</div>
+          </CardContent>
+        </Card>
+
+        {/* Originales vs réplicas: MB quiere vigilar la proporción. Muchas
+            réplicas es señal de revisar que de verdad comparten envase. */}
+        <Card
+          className={
+            (replicaStats?.replicaShare ?? 0) > REPLICA_ALERT_THRESHOLD
+              ? "border-amber-500/50 bg-amber-500/5"
+              : ""
+          }
+        >
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Réplicas
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {replicaStats?.replicas ?? 0}
+              <span className="text-sm font-normal text-muted-foreground">
+                {" "}
+                / {replicaStats?.total ?? 0}
+              </span>
+            </div>
+            <p
+              className={`text-xs ${
+                (replicaStats?.replicaShare ?? 0) > REPLICA_ALERT_THRESHOLD
+                  ? "text-amber-600 dark:text-amber-500"
+                  : "text-muted-foreground"
+              }`}
+            >
+              {replicaStats
+                ? `${replicaStats.replicaShare}% del catálogo`
+                : "—"}
+              {(replicaStats?.replicaShare ?? 0) > REPLICA_ALERT_THRESHOLD &&
+                " · conviene verificar"}
+            </p>
           </CardContent>
         </Card>
         <Card>

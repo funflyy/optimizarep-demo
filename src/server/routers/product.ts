@@ -435,6 +435,193 @@ export const productRouter = createTRPCRouter({
     }),
 
   /**
+   * Crea un SKU nuevo a partir de otro, copiando su envase.
+   *
+   * Es el caso real de las réplicas: muchos SKU comparten exactamente el mismo
+   * envase (la misma botella para diez sabores) y volver a declarar pieza por
+   * pieza es trabajo duplicado y una fuente de inconsistencias.
+   *
+   * NO copia las ventas: el volumen es propio de cada SKU. Copia el envase y
+   * los datos comerciales que se le pasen.
+   */
+  duplicateFrom: orgProcedure
+    .input(
+      z.object({
+        sourceSku: z.string().min(1),
+        newSku: z.string().min(1),
+        newName: z.string().min(1),
+        brand: z.string().optional(),
+        category: z.string().optional(),
+        subcategory: z.string().optional(),
+        family: z.string().optional(),
+        subfamily: z.string().optional(),
+        organizationId: z.string().uuid().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const orgId = await resolveTargetOrg(ctx.db, ctx, input.organizationId);
+
+      if (input.newSku.trim() === input.sourceSku.trim()) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "El SKU nuevo y el de origen son el mismo",
+        });
+      }
+
+      const source = await ctx.db.query.products.findFirst({
+        where: (p, { eq: _eq, and: _and }) =>
+          _and(_eq(p.sku, input.sourceSku), _eq(p.organizationId, orgId)),
+        with: { pieces: true },
+      });
+      if (!source) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `No existe el SKU ${input.sourceSku} en esta organización`,
+        });
+      }
+      if (source.pieces.length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `El SKU ${input.sourceSku} no tiene piezas que copiar`,
+        });
+      }
+
+      const yaExiste = await ctx.db.query.products.findFirst({
+        where: (p, { eq: _eq, and: _and }) =>
+          _and(_eq(p.sku, input.newSku), _eq(p.organizationId, orgId)),
+      });
+      if (yaExiste) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: `El SKU ${input.newSku} ya existe en esta organización`,
+        });
+      }
+
+      // Si el origen ya era réplica, el original es su original: no se
+      // encadenan copias de copias.
+      const originalSku = source.isReplica
+        ? (source.originalSku ?? source.sku)
+        : source.sku;
+
+      const creado = await ctx.db.transaction(async (tx) => {
+        const [nuevo] = await tx
+          .insert(products)
+          .values({
+            organizationId: orgId,
+            sku: input.newSku,
+            name: input.newName,
+            brand: input.brand ?? source.brand,
+            category: input.category ?? source.category,
+            subcategory: input.subcategory ?? source.subcategory,
+            family: input.family ?? source.family,
+            subfamily: input.subfamily ?? source.subfamily,
+            productType: source.productType,
+            priorityProduct: source.priorityProduct,
+            priorityProductId: source.priorityProductId,
+            isReplica: true,
+            originalSku,
+          })
+          .returning();
+
+        await tx.insert(productPieces).values(
+          source.pieces.map((p) => ({
+            productId: nuevo.id,
+            pieceName: p.pieceName,
+            packagingType: p.packagingType,
+            isDomiciliary: p.isDomiciliary,
+            materialClass: p.materialClass,
+            wasteType: p.wasteType,
+            materialDetail: p.materialDetail,
+            weightGrams: p.weightGrams,
+            weightValue: p.weightValue,
+            weightUnit: p.weightUnit,
+            categoryLevel1: p.categoryLevel1,
+            categoryLevel2: p.categoryLevel2,
+            metadata: p.metadata,
+            hasGrease: p.hasGrease,
+            isHazardous: p.isHazardous,
+            plasticCharacteristic: p.plasticCharacteristic,
+            repCategoryId: p.repCategoryId,
+            notSubjectToRep: p.notSubjectToRep,
+            exemptionReason: p.exemptionReason,
+            hasRecycledMaterial: p.hasRecycledMaterial,
+            recycledPercentage: p.recycledPercentage,
+            recycledOrigin: p.recycledOrigin,
+            isReplica: true,
+            originalSku,
+          }))
+        );
+
+        return nuevo;
+      });
+
+      await recordAudit(ctx.db, {
+        organizationId: orgId,
+        userId: ctx.user.id,
+        entity: "products",
+        entityId: creado.id,
+        action: "create",
+        changes: {
+          sku: creado.sku,
+          creadoDesde: source.sku,
+          originalSku,
+          piezasCopiadas: source.pieces.length,
+        },
+      });
+
+      return {
+        id: creado.id,
+        sku: creado.sku,
+        originalSku,
+        piecesCopied: source.pieces.length,
+      };
+    }),
+
+  /**
+   * Distribución de SKU originales vs réplicas.
+   *
+   * MB quiere vigilar la proporción: si muchos SKU se crearon duplicando,
+   * conviene verificar que de verdad comparten las condiciones de envasado.
+   */
+  replicaStats: orgProcedure.query(async ({ ctx }) => {
+    const rows = await ctx.db
+      .select({
+        isReplica: products.isReplica,
+        originalSku: products.originalSku,
+        sku: products.sku,
+      })
+      .from(products)
+      .where(
+        and(
+          ctx.orgDbId ? eq(products.organizationId, ctx.orgDbId) : undefined,
+          eq(products.isActive, true)
+        )
+      );
+
+    const replicas = rows.filter((r) => r.isReplica);
+    const total = rows.length;
+
+    // Cuántas réplicas cuelgan de cada original, para saber dónde mirar
+    const porOriginal = new Map<string, number>();
+    for (const r of replicas) {
+      const k = r.originalSku ?? "(sin origen)";
+      porOriginal.set(k, (porOriginal.get(k) ?? 0) + 1);
+    }
+
+    return {
+      total,
+      originals: total - replicas.length,
+      replicas: replicas.length,
+      replicaShare:
+        total > 0 ? Math.round((replicas.length / total) * 1000) / 10 : 0,
+      topOriginals: [...porOriginal.entries()]
+        .map(([originalSku, count]) => ({ originalSku, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10),
+    };
+  }),
+
+  /**
    * Replica las piezas de otro SKU.
    *
    * El mismo envase se repite en muchos SKU (la misma botella para 10 sabores),
