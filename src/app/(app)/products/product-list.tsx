@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { trpc } from "@/lib/trpc";
 import {
   Card,
@@ -12,7 +12,6 @@ import {
 import {
   Table,
   TableBody,
-  TableCell,
   TableHead,
   TableHeader,
   TableRow,
@@ -93,7 +92,14 @@ export function ProductList() {
               "Peso Total (g)": p.pieces.reduce((a, pc) => a + pc.weightGrams, 0).toFixed(1),
               Ventas: p.salesRecords[0]?.unitsSold ?? "",
             }))}
-            filename="productos_optimizarep"
+            filename="Productos"
+            report="Catálogo de Productos"
+            sheetName="Productos"
+            scope={{
+              Búsqueda: search || null,
+              Categoría: category !== "all" ? category : "todas",
+              SKUs: allProducts.length,
+            }}
           />
           <DuplicateSkuDialog
             sources={replicaCandidates.map((c) => ({

@@ -106,7 +106,15 @@ export default function IndustrialWastePage() {
         <div className="flex items-center gap-2">
           <ExcelExportButton
             data={sinaderRows}
-            filename="gestion_industrial_sinader"
+            filename="Gestion_Industrial_SINADER"
+            report="Gestión Industrial — formato SINADER"
+            sheetName="SINADER"
+            scope={{
+              Año: year !== ALL ? year : "todos",
+              Mes: month !== ALL ? MONTH_NAMES[Number(month)] : "todos",
+              LER: lerFilter !== ALL ? lerFilter : "todos",
+              Registros: records.length,
+            }}
           />
           <WasteFormDialog lerCatalog={ler} />
         </div>

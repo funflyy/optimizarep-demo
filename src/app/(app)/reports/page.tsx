@@ -28,6 +28,13 @@ import { Badge } from "@/components/ui/badge";
 import { useState } from "react";
 import { useProductType } from "@/hooks/use-product-type";
 import { MONTH_NAMES } from "@/components/month-filter";
+import { useReportContext } from "@/hooks/use-report-context";
+import {
+  appendStampSheet,
+  drawPdfFooter,
+  generatedAtLabel,
+  stampedFilename,
+} from "@/lib/report-stamp";
 
 const uf = (n: number) =>
   n.toLocaleString("es-CL", {
@@ -50,9 +57,14 @@ export default function ReportsPage() {
   const [exporting, setExporting] = useState<string | null>(null);
   const [exported, setExported] = useState<string | null>(null);
 
+  const sinaderCtx = useReportContext("Declaración SINADER");
+  const bbddCtx = useReportContext("BBDD de Productos");
+  const pdfCtx = useReportContext("Reporte Ejecutivo");
+
   async function exportSinader() {
     setExporting("sinader");
     const XLSX = await import("xlsx");
+    const now = new Date();
 
     // Hoja 1: Productos
     const prodRows = allProducts.map((p) => ({
@@ -139,7 +151,8 @@ export default function ReportsPage() {
       XLSX.utils.json_to_sheet(pomRows),
       "POM por Material"
     );
-    XLSX.writeFile(wb, "Declaracion_SINADER_2024.xlsx");
+    appendStampSheet(XLSX, wb, sinaderCtx, now);
+    XLSX.writeFile(wb, `${stampedFilename("Declaracion_SINADER", now)}.xlsx`);
     setExporting(null);
     setExported("sinader");
     setTimeout(() => setExported(null), 3000);
@@ -148,6 +161,7 @@ export default function ReportsPage() {
   async function exportBBDD() {
     setExporting("bbdd");
     const XLSX = await import("xlsx");
+    const now = new Date();
 
     const rows = allProducts.flatMap((p) =>
       p.pieces.map((pc) => ({
@@ -177,7 +191,8 @@ export default function ReportsPage() {
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "BBDD");
-    XLSX.writeFile(wb, "BBDD_Productos_OptimizaREP.xlsx");
+    appendStampSheet(XLSX, wb, bbddCtx, now);
+    XLSX.writeFile(wb, `${stampedFilename("BBDD_Productos", now)}.xlsx`);
     setExporting(null);
     setExported("bbdd");
     setTimeout(() => setExported(null), 3000);
@@ -190,13 +205,8 @@ export default function ReportsPage() {
 
     const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
     const pageW = doc.internal.pageSize.getWidth();
-    const pageH = doc.internal.pageSize.getHeight();
     const now = new Date();
-    const dateStr = now.toLocaleDateString("es-CL", {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    });
+    const dateStr = generatedAtLabel(now);
 
     // ── Cover / Header ──
     doc.setFillColor(16, 185, 129);
@@ -206,6 +216,9 @@ export default function ReportsPage() {
     doc.text("OptimizaREP — Reporte Ejecutivo", 14, 22);
     doc.setFontSize(12);
     doc.text(`Generado: ${dateStr}`, 14, 33);
+    if (pdfCtx.organization) {
+      doc.text(pdfCtx.organization, pageW - 14, 33, { align: "right" });
+    }
     doc.setTextColor(0, 0, 0);
 
     // ── Resumen ──
@@ -325,21 +338,8 @@ export default function ReportsPage() {
       margin: { left: 14, right: 14 },
     });
 
-    // ── Footer en todas las páginas ──
-    const totalPages = doc.getNumberOfPages();
-    for (let i = 1; i <= totalPages; i++) {
-      doc.setPage(i);
-      doc.setFontSize(8);
-      doc.setTextColor(150);
-      doc.text(
-        `OptimizaREP — Reporte Ejecutivo | ${dateStr} | Página ${i} de ${totalPages}`,
-        pageW / 2,
-        pageH - 8,
-        { align: "center" }
-      );
-    }
-
-    doc.save("Reporte_Ejecutivo_OptimizaREP.pdf");
+    drawPdfFooter(doc, pdfCtx, now);
+    doc.save(`${stampedFilename("Reporte_Ejecutivo", now)}.pdf`);
     setExporting(null);
     setExported("pdf");
     setTimeout(() => setExported(null), 3000);
