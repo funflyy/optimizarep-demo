@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { trpc } from "@/lib/trpc";
 import { usePriorityProduct } from "@/components/priority-product-context";
+import { MONTH_NAMES } from "@/components/month-filter";
 import {
   Card,
   CardContent,
@@ -53,6 +54,58 @@ interface PieceForm {
   /** % de material reciclado incorporado; vacío = no declarado */
   recycledPercentage: string;
   recycledOrigin: "" | "nacional" | "importado";
+}
+
+/** Venta declarada de un período; el usuario solo edita las unidades */
+interface SaleForm {
+  year: number;
+  month: number;
+  segment: "Domiciliario" | "No Domiciliario";
+  unitsSold: number;
+}
+
+/**
+ * Producto existente que se está editando.
+ *
+ * Se recibe ya cargado en vez de consultarlo aquí dentro: así el estado se
+ * inicializa una sola vez con los valores reales, sin un efecto que copie la
+ * respuesta al estado después del primer render.
+ */
+export interface ProductInitial {
+  id: string;
+  /** Enum legacy del producto prioritario al que pertenece el SKU */
+  productType: string;
+  sku: string;
+  name: string;
+  brand: string | null;
+  category: string | null;
+  family: string | null;
+  subfamily: string | null;
+  observations: string | null;
+  pieces: Array<{
+    pieceName: string;
+    packagingType: "primary" | "secondary" | "tertiary";
+    isDomiciliary: boolean;
+    materialClass: string;
+    wasteType: "recyclable" | "non_recyclable";
+    materialDetail: string;
+    weightGrams: number;
+    weightValue: number | null;
+    weightUnit: string;
+    repCategoryId: string | null;
+    hasGrease: boolean;
+    isHazardous: boolean;
+    notSubjectToRep: boolean;
+    exemptionReason: string | null;
+    recycledPercentage: string | null;
+    recycledOrigin: string | null;
+  }>;
+  salesRecords: Array<{
+    year: number;
+    month: number;
+    segment: string;
+    unitsSold: number;
+  }>;
 }
 
 const EMPTY_PIECE: PieceForm = {
@@ -106,12 +159,55 @@ const PP_CONFIG: Record<
   pilas_aee: { pieceSection: "Especificación del Producto", pieceName: "Unidad", salesLabel: "Unidades comercializadas" },
 };
 
-export function ProductForm() {
+/**
+ * Enum legacy `products.product_type` → código del catálogo.
+ *
+ * Solo difieren en pilas; el resto coincide. Es la inversa del mapa que usa el
+ * servidor al resolver el producto prioritario.
+ */
+const PRODUCT_TYPE_TO_CODE: Record<string, string> = { pilas: "pilas_aee" };
+
+/** Pieza guardada → estado del formulario */
+function toPieceForm(p: ProductInitial["pieces"][number]): PieceForm {
+  return {
+    pieceName: p.pieceName,
+    packagingType: p.packagingType,
+    isDomiciliary: p.isDomiciliary,
+    materialClass: p.materialClass,
+    wasteType: p.wasteType,
+    materialDetail: p.materialDetail,
+    // El peso nativo es el que ve el usuario; weightGrams es el derivado
+    weightNative: p.weightValue ?? p.weightGrams,
+    repCategoryId: p.repCategoryId ?? undefined,
+    hasGrease: p.hasGrease,
+    isHazardous: p.isHazardous,
+    notSubjectToRep: p.notSubjectToRep,
+    exemptionReason: p.exemptionReason ?? "",
+    recycledPercentage: p.recycledPercentage
+      ? String(Number(p.recycledPercentage))
+      : "",
+    recycledOrigin:
+      p.recycledOrigin === "nacional" || p.recycledOrigin === "importado"
+        ? p.recycledOrigin
+        : "",
+  };
+}
+
+export function ProductForm({ initial }: { initial?: ProductInitial } = {}) {
   const router = useRouter();
   const { selected } = usePriorityProduct();
-  const ppCode = selected?.code ?? "envases_embalajes";
+  /**
+   * Editando manda el producto prioritario DEL SKU, no el del selector lateral.
+   *
+   * Si se tomara el del selector, abrir un SKU de RAEE con "Envases" activo
+   * mostraría el formulario equivocado y, al guardar, lo reclasificaría.
+   */
+  const ppCode = initial
+    ? PRODUCT_TYPE_TO_CODE[initial.productType] ?? initial.productType
+    : (selected?.code ?? "envases_embalajes");
   const isEnvases = ppCode === "envases_embalajes";
   const cfg = PP_CONFIG[ppCode] ?? PP_CONFIG.envases_embalajes;
+  const isEdit = Boolean(initial);
 
   // Unidad nativa y categorías legales del producto prioritario
   const { data: ppList } = trpc.priorityProduct.list.useQuery();
@@ -121,22 +217,48 @@ export function ProductForm() {
     { enabled: !isEnvases }
   );
 
+  const utils = trpc.useUtils();
+  const volverAlListado = () => {
+    utils.product.list.invalidate();
+    router.push("/products");
+  };
   const createMutation = trpc.product.create.useMutation({
-    onSuccess: () => router.push("/products"),
+    onSuccess: volverAlListado,
   });
+  const updateMutation = trpc.product.update.useMutation({
+    onSuccess: volverAlListado,
+  });
+  const mutation = isEdit ? updateMutation : createMutation;
 
-  const [sku, setSku] = useState("");
-  const [name, setName] = useState("");
-  const [brand, setBrand] = useState("");
-  const [category, setCategory] = useState("");
-  const [family, setFamily] = useState("");
-  const [subfamily, setSubfamily] = useState("");
-  const [observations, setObservations] = useState("");
+  const [sku, setSku] = useState(initial?.sku ?? "");
+  const [name, setName] = useState(initial?.name ?? "");
+  const [brand, setBrand] = useState(initial?.brand ?? "");
+  const [category, setCategory] = useState(initial?.category ?? "");
+  const [family, setFamily] = useState(initial?.family ?? "");
+  const [subfamily, setSubfamily] = useState(initial?.subfamily ?? "");
+  const [observations, setObservations] = useState(initial?.observations ?? "");
   const [unitsSold, setUnitsSold] = useState<number | undefined>();
   const [salesYear, setSalesYear] = useState(2026);
-  const [pieces, setPieces] = useState<PieceForm[]>([
-    { ...EMPTY_PIECE, pieceName: isEnvases ? "" : "Unidad" },
-  ]);
+  /**
+   * Ventas ya declaradas. Solo en edición: son las que el importador cargó por
+   * mes y segmento, y hay que reenviarlas tal cual o dejarlas intactas. Guardar
+   * aquí un total anual además de los meses haría que ese SKU aporte su
+   * tonelaje dos veces, porque el cálculo suma todos los períodos.
+   */
+  const [sales, setSales] = useState<SaleForm[]>(
+    (initial?.salesRecords ?? []).map((s) => ({
+      year: s.year,
+      month: s.month,
+      segment:
+        s.segment === "No Domiciliario" ? "No Domiciliario" : "Domiciliario",
+      unitsSold: s.unitsSold,
+    }))
+  );
+  const [pieces, setPieces] = useState<PieceForm[]>(
+    initial
+      ? initial.pieces.map(toPieceForm)
+      : [{ ...EMPTY_PIECE, pieceName: isEnvases ? "" : "Unidad" }]
+  );
 
   function addPiece() {
     setPieces([...pieces, { ...EMPTY_PIECE, pieceName: isEnvases ? "" : "Unidad" }]);
@@ -176,8 +298,13 @@ export function ProductForm() {
       setFormError("Selecciona la Categoría REP del producto.");
       return;
     }
+    if (pieces.length === 0) {
+      setFormError("El producto necesita al menos una pieza.");
+      return;
+    }
     setFormError(null);
-    createMutation.mutate({
+
+    const data = {
       sku,
       name,
       brand: brand || undefined,
@@ -207,9 +334,19 @@ export function ProductForm() {
           : undefined,
         recycledOrigin: p.recycledOrigin || undefined,
       })),
-      unitsSold,
-      salesYear: unitsSold ? salesYear : undefined,
-    });
+      /**
+       * En edición se reenvían los períodos ya declarados (el servidor hace
+       * upsert por año/mes/segmento) y NUNCA el total anual: agregar un
+       * registro de mes 0 sobre doce mensuales haría que el SKU aporte su
+       * tonelaje dos veces, porque el cálculo suma todos los períodos.
+       */
+      ...(isEdit
+        ? { sales }
+        : { unitsSold, salesYear: unitsSold ? salesYear : undefined }),
+    };
+
+    if (initial) updateMutation.mutate({ id: initial.id, data });
+    else createMutation.mutate(data);
   }
 
   const totalWeight = pieces.reduce((a, p) => a + (p.weightNative || 0), 0);
@@ -226,7 +363,7 @@ export function ProductForm() {
           </Button>
           <div>
             <h1 className="text-3xl font-bold tracking-tight">
-              Nuevo Producto
+              {isEdit ? `Editar ${initial!.sku}` : "Nuevo Producto"}
             </h1>
             <p className="text-muted-foreground mt-1">
               {selected
@@ -235,15 +372,31 @@ export function ProductForm() {
             </p>
           </div>
         </div>
-        <Button type="submit" disabled={createMutation.isPending}>
+        <Button type="submit" disabled={mutation.isPending}>
           <SaveIcon className="mr-2 h-4 w-4" />
-          {createMutation.isPending ? "Guardando..." : "Guardar Producto"}
+          {mutation.isPending
+            ? "Guardando..."
+            : isEdit
+              ? "Guardar cambios"
+              : "Guardar Producto"}
         </Button>
       </div>
 
-      {(formError || createMutation.error) && (
+      {isEdit && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm">
+          <p>
+            Al guardar se reemplazan <strong>todas</strong> las piezas por las
+            que aparecen abajo. Quitar una de la lista la elimina del SKU.
+          </p>
+          <p className="text-muted-foreground mt-1">
+            El cambio queda registrado con tu usuario y la fecha.
+          </p>
+        </div>
+      )}
+
+      {(formError || mutation.error) && (
         <div className="rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-          {formError ?? createMutation.error?.message}
+          {formError ?? mutation.error?.message}
         </div>
       )}
 
@@ -336,41 +489,90 @@ export function ProductForm() {
         <CardHeader>
           <CardTitle className="text-lg">Puesta en Mercado</CardTitle>
           <CardDescription>
-            Opcional — {cfg.salesLabel.toLowerCase()} en un año
+            {isEdit
+              ? "Períodos ya declarados. Se editan las unidades; el período no cambia."
+              : `Opcional — ${cfg.salesLabel.toLowerCase()} en un año`}
           </CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-2">
-          <div className="space-y-2">
-            <Label htmlFor="salesYear">Año</Label>
-            <Select
-              value={String(salesYear)}
-              onValueChange={(v) => setSalesYear(Number(v))}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {[2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026].map((y) => (
-                  <SelectItem key={y} value={String(y)}>
-                    {y}
-                  </SelectItem>
+        <CardContent>
+          {isEdit ? (
+            sales.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Este SKU no tiene ventas declaradas. Se cargan desde la
+                importación de la línea base.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {sales.map((s, i) => (
+                  <div
+                    key={`${s.year}-${s.month}-${s.segment}`}
+                    className="flex flex-wrap items-center gap-3 rounded-md border p-2"
+                  >
+                    <span className="min-w-32 text-sm">
+                      {s.month === 0 ? s.year : `${MONTH_NAMES[s.month]} ${s.year}`}
+                    </span>
+                    <Badge variant="outline" className="text-xs">
+                      {s.segment === "Domiciliario" ? "DOM" : "NO DOM"}
+                    </Badge>
+                    <Input
+                      type="number"
+                      min={0}
+                      className="h-8 w-40 text-sm"
+                      value={s.unitsSold}
+                      onChange={(e) =>
+                        setSales(
+                          sales.map((x, j) =>
+                            j === i
+                              ? { ...x, unitsSold: Number(e.target.value) || 0 }
+                              : x
+                          )
+                        )
+                      }
+                    />
+                    <span className="text-xs text-muted-foreground">
+                      {cfg.salesLabel.toLowerCase()}
+                    </span>
+                  </div>
                 ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="units">{cfg.salesLabel}</Label>
-            <Input
-              id="units"
-              type="number"
-              min={0}
-              value={unitsSold ?? ""}
-              onChange={(e) =>
-                setUnitsSold(e.target.value ? Number(e.target.value) : undefined)
-              }
-              placeholder="Ej: 100000"
-            />
-          </div>
+              </div>
+            )
+          ) : (
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="salesYear">Año</Label>
+                <Select
+                  value={String(salesYear)}
+                  onValueChange={(v) => setSalesYear(Number(v))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026].map((y) => (
+                      <SelectItem key={y} value={String(y)}>
+                        {y}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="units">{cfg.salesLabel}</Label>
+                <Input
+                  id="units"
+                  type="number"
+                  min={0}
+                  value={unitsSold ?? ""}
+                  onChange={(e) =>
+                    setUnitsSold(
+                      e.target.value ? Number(e.target.value) : undefined
+                    )
+                  }
+                  placeholder="Ej: 100000"
+                />
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 

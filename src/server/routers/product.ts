@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { createTRPCRouter, orgProcedure } from "@/server/trpc";
 import { resolveTargetOrg } from "@/server/authz";
 import { pieceValues } from "@/server/piece-values";
+import { diffPieces } from "@/server/piece-diff";
 import {
   products,
   productPieces,
@@ -493,6 +494,10 @@ export const productRouter = createTRPCRouter({
             ahora: pieces.length,
           };
         }
+        // Qué cambió DENTRO de las piezas: sin esto, bajar el gramaje de una
+        // pieza no dejaba rastro, que es el cambio de mayor impacto en el costo
+        const piezas = diffPieces(before.pieces, pieces);
+        Object.assign(cambios, piezas);
       }
 
       await recordAudit(ctx.db, {
