@@ -134,6 +134,8 @@ export default function ImportPage() {
         name: prod.name,
         brand: prod.brand || undefined,
         category: prod.category || undefined,
+        family: prod.family,
+        subfamily: prod.subfamily,
         pieces: prod.pieces,
         sales: prod.sales,
       };

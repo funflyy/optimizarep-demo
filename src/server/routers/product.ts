@@ -2,13 +2,18 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { createTRPCRouter, orgProcedure } from "@/server/trpc";
 import { resolveTargetOrg } from "@/server/authz";
+import { pieceValues } from "@/server/piece-values";
+import { diffPieces } from "@/server/piece-diff";
 import {
   products,
   productPieces,
   salesRecords,
   productTypeEnum,
+  auditLog,
+  users,
 } from "@/server/db/schema";
-import { eq, and, sql, asc, inArray } from "drizzle-orm";
+import { eq, and, sql, asc, desc, inArray } from "drizzle-orm";
+import { recordAudit } from "@/server/audit";
 
 /** Validación de una pieza/componente */
 const pieceSchema = z.object({
@@ -27,6 +32,21 @@ const pieceSchema = z.object({
   hasGrease: z.boolean().default(false),
   isHazardous: z.boolean().default(false),
   plasticCharacteristic: z.string().optional(),
+  /**
+   * Fuera del régimen REP (madera reutilizable y otros que la ley no afecta).
+   * Se declara igual, pero no paga tarifa: sin esta marca quedaba como "sin
+   * mapear", indistinguible de un error de configuración.
+   */
+  notSubjectToRep: z.boolean().default(false),
+  exemptionReason: z.string().optional(),
+  /**
+   * Material reciclado incorporado. Hoy es informativo; cuando exista el
+   * descuento en tarifa, solo aplicará al de origen nacional, así que el
+   * origen se registra desde ya.
+   */
+  hasRecycledMaterial: z.boolean().default(false),
+  recycledPercentage: z.number().min(0).max(100).optional(),
+  recycledOrigin: z.enum(["nacional", "importado"]).optional(),
 });
 
 /** Validación de producto completo */
@@ -42,6 +62,18 @@ const productInputSchema = z.object({
   brand: z.string().optional(),
   category: z.string().optional(),
   subcategory: z.string().optional(),
+  /**
+   * Jerarquía comercial para agrupar el catálogo (Lácteos → Yogurts).
+   *
+   * Ni el archivo del cliente ni la plantilla de referencia traen estas
+   * columnas todavía: el LB usa "Departamento" y la plantilla "Categoría" /
+   * "Subcategoría", que se siguen cargando en category/subcategory. Cuando
+   * familia viene vacía, las pantallas agrupan por category, así que agrupar
+   * por familia funciona con los archivos que hoy existen sin duplicar el dato
+   * en la base.
+   */
+  family: z.string().optional(),
+  subfamily: z.string().optional(),
   priorityProduct: z.string().default("Envases y Embalajes"),
   /** Código del producto prioritario del catálogo dinámico */
   priorityProductCode: z.string().optional(),
@@ -109,6 +141,8 @@ export const productRouter = createTRPCRouter({
       z.object({
         search: z.string().optional(),
         category: z.string().optional(),
+        /** Familia comercial; cae en `category` cuando la familia está vacía */
+        family: z.string().optional(),
         /** Filtro por producto prioritario (enum legacy product_type) */
         productType: z.string().optional(),
         page: z.number().int().min(1).default(1),
@@ -116,7 +150,8 @@ export const productRouter = createTRPCRouter({
       }).optional()
     )
     .query(async ({ ctx, input }) => {
-      const { search, category, productType, page = 1, limit = 50 } = input ?? {};
+      const { search, category, family, productType, page = 1, limit = 50 } =
+        input ?? {};
 
       const allProducts = await ctx.db.query.products.findMany({
         with: { pieces: true, salesRecords: true },
@@ -136,6 +171,8 @@ export const productRouter = createTRPCRouter({
             );
           }
           if (category) conditions.push(_eq(p.category, category));
+          if (family)
+            conditions.push(sql`COALESCE(${p.family}, ${p.category}) = ${family}`);
           return _and(...conditions);
         },
         orderBy: (p, { asc }) => [asc(p.sku)],
@@ -190,6 +227,46 @@ export const productRouter = createTRPCRouter({
     return result.map((r) => r.category).filter(Boolean) as string[];
   }),
 
+  /**
+   * Familias para el filtro.
+   *
+   * Cae en `category` cuando la familia está vacía: ni el archivo del cliente
+   * ni la plantilla traen todavía una columna "Familia", así que sin el
+   * fallback el filtro saldría vacío en todos los catálogos que hoy existen.
+   * El dato no se duplica en la base; la equivalencia se resuelve al leer.
+   */
+  families: orgProcedure.query(async ({ ctx }) => {
+    const orgFilter = ctx.orgDbId
+      ? eq(products.organizationId, ctx.orgDbId)
+      : undefined;
+    const effective = sql<string>`COALESCE(${products.family}, ${products.category})`;
+
+    const [values, explicit] = await Promise.all([
+      ctx.db
+        .selectDistinct({ family: effective })
+        .from(products)
+        .where(
+          and(orgFilter, sql`COALESCE(${products.family}, ${products.category}) IS NOT NULL`)
+        )
+        .orderBy(asc(effective)),
+      ctx.db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(products)
+        .where(and(orgFilter, sql`${products.family} IS NOT NULL`)),
+    ]);
+
+    return {
+      values: values.map((r) => r.family).filter(Boolean),
+      /**
+       * false mientras nadie haya cargado una familia explícita. La UI usa esto
+       * para no mostrar un filtro "Familia" que hoy sería idéntico al de
+       * categoría, que es de lo que se quejan los usuarios cuando ven dos
+       * filtros que hacen lo mismo.
+       */
+      hasExplicit: (explicit[0]?.n ?? 0) > 0,
+    };
+  }),
+
   /** Obtener un producto por ID — verifica ownership */
   getById: orgProcedure
     .input(z.object({ id: z.string().uuid() }))
@@ -224,7 +301,7 @@ export const productRouter = createTRPCRouter({
       const { priorityProductId, productType, salesUnit } =
         await resolvePriorityProduct(ctx.db, priorityProductCode);
 
-      return ctx.db.transaction(async (tx) => {
+      const created = await ctx.db.transaction(async (tx) => {
         const [product] = await tx
           .insert(products)
           .values({
@@ -237,7 +314,7 @@ export const productRouter = createTRPCRouter({
 
         if (pieces.length > 0) {
           await tx.insert(productPieces).values(
-            pieces.map((p) => ({ ...p, productId: product.id }))
+            pieces.map((p) => pieceValues(p, product.id))
           );
         }
 
@@ -266,6 +343,23 @@ export const productRouter = createTRPCRouter({
 
         return product;
       });
+
+      // Respaldo de quién creó el SKU y cuándo: es parte de lo declarado
+      await recordAudit(ctx.db, {
+        organizationId: orgId,
+        userId: ctx.user.id,
+        entity: "products",
+        entityId: created.id,
+        action: "create",
+        changes: {
+          sku: created.sku,
+          name: created.name,
+          pieces: pieces.length,
+          periodos: sales?.length ?? 0,
+        },
+      });
+
+      return created;
     }),
 
   /** Actualizar producto con piezas — verifica ownership */
@@ -296,7 +390,13 @@ export const productRouter = createTRPCRouter({
       const { priorityProductId, productType, salesUnit } =
         await resolvePriorityProduct(ctx.db, priorityProductCode);
 
-      return ctx.db.transaction(async (tx) => {
+      // Estado anterior, para poder mostrar qué cambió
+      const before = await ctx.db.query.products.findFirst({
+        where: (p, { eq: _eq }) => _eq(p.id, input.id),
+        with: { pieces: true },
+      });
+
+      const updated = await ctx.db.transaction(async (tx) => {
         const [product] = await tx
           .update(products)
           .set({
@@ -327,7 +427,7 @@ export const productRouter = createTRPCRouter({
 
         if (pieces.length > 0) {
           await tx.insert(productPieces).values(
-            pieces.map((p) => ({ ...p, productId: input.id }))
+            pieces.map((p) => pieceValues(p, input.id))
           );
         }
 
@@ -372,7 +472,232 @@ export const productRouter = createTRPCRouter({
 
         return product;
       });
+
+      // Respaldo del cambio: quién, cuándo y qué campos se movieron
+      const cambios: Record<string, unknown> = { sku: updated.sku };
+      if (before) {
+        for (const campo of [
+          "name",
+          "brand",
+          "category",
+          "subcategory",
+          "family",
+          "subfamily",
+        ] as const) {
+          if (before[campo] !== updated[campo]) {
+            cambios[campo] = { antes: before[campo], ahora: updated[campo] };
+          }
+        }
+        if (before.pieces.length !== pieces.length) {
+          cambios.piezas = {
+            antes: before.pieces.length,
+            ahora: pieces.length,
+          };
+        }
+        // Qué cambió DENTRO de las piezas: sin esto, bajar el gramaje de una
+        // pieza no dejaba rastro, que es el cambio de mayor impacto en el costo
+        const piezas = diffPieces(before.pieces, pieces);
+        Object.assign(cambios, piezas);
+      }
+
+      await recordAudit(ctx.db, {
+        organizationId: updated.organizationId,
+        userId: ctx.user.id,
+        entity: "products",
+        entityId: updated.id,
+        action: "update",
+        changes: cambios,
+      });
+
+      return updated;
     }),
+
+  /**
+   * Crea un SKU nuevo a partir de otro, copiando su envase.
+   *
+   * Es el caso real de las réplicas: muchos SKU comparten exactamente el mismo
+   * envase (la misma botella para diez sabores) y volver a declarar pieza por
+   * pieza es trabajo duplicado y una fuente de inconsistencias.
+   *
+   * NO copia las ventas: el volumen es propio de cada SKU. Copia el envase y
+   * los datos comerciales que se le pasen.
+   */
+  duplicateFrom: orgProcedure
+    .input(
+      z.object({
+        sourceSku: z.string().min(1),
+        newSku: z.string().min(1),
+        newName: z.string().min(1),
+        brand: z.string().optional(),
+        category: z.string().optional(),
+        subcategory: z.string().optional(),
+        family: z.string().optional(),
+        subfamily: z.string().optional(),
+        organizationId: z.string().uuid().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const orgId = await resolveTargetOrg(ctx.db, ctx, input.organizationId);
+
+      if (input.newSku.trim() === input.sourceSku.trim()) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "El SKU nuevo y el de origen son el mismo",
+        });
+      }
+
+      const source = await ctx.db.query.products.findFirst({
+        where: (p, { eq: _eq, and: _and }) =>
+          _and(_eq(p.sku, input.sourceSku), _eq(p.organizationId, orgId)),
+        with: { pieces: true },
+      });
+      if (!source) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `No existe el SKU ${input.sourceSku} en esta organización`,
+        });
+      }
+      if (source.pieces.length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `El SKU ${input.sourceSku} no tiene piezas que copiar`,
+        });
+      }
+
+      const yaExiste = await ctx.db.query.products.findFirst({
+        where: (p, { eq: _eq, and: _and }) =>
+          _and(_eq(p.sku, input.newSku), _eq(p.organizationId, orgId)),
+      });
+      if (yaExiste) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: `El SKU ${input.newSku} ya existe en esta organización`,
+        });
+      }
+
+      // Si el origen ya era réplica, el original es su original: no se
+      // encadenan copias de copias.
+      const originalSku = source.isReplica
+        ? (source.originalSku ?? source.sku)
+        : source.sku;
+
+      const creado = await ctx.db.transaction(async (tx) => {
+        const [nuevo] = await tx
+          .insert(products)
+          .values({
+            organizationId: orgId,
+            sku: input.newSku,
+            name: input.newName,
+            brand: input.brand ?? source.brand,
+            category: input.category ?? source.category,
+            subcategory: input.subcategory ?? source.subcategory,
+            family: input.family ?? source.family,
+            subfamily: input.subfamily ?? source.subfamily,
+            productType: source.productType,
+            priorityProduct: source.priorityProduct,
+            priorityProductId: source.priorityProductId,
+            isReplica: true,
+            originalSku,
+          })
+          .returning();
+
+        await tx.insert(productPieces).values(
+          source.pieces.map((p) => ({
+            productId: nuevo.id,
+            pieceName: p.pieceName,
+            packagingType: p.packagingType,
+            isDomiciliary: p.isDomiciliary,
+            materialClass: p.materialClass,
+            wasteType: p.wasteType,
+            materialDetail: p.materialDetail,
+            weightGrams: p.weightGrams,
+            weightValue: p.weightValue,
+            weightUnit: p.weightUnit,
+            categoryLevel1: p.categoryLevel1,
+            categoryLevel2: p.categoryLevel2,
+            metadata: p.metadata,
+            hasGrease: p.hasGrease,
+            isHazardous: p.isHazardous,
+            plasticCharacteristic: p.plasticCharacteristic,
+            repCategoryId: p.repCategoryId,
+            notSubjectToRep: p.notSubjectToRep,
+            exemptionReason: p.exemptionReason,
+            hasRecycledMaterial: p.hasRecycledMaterial,
+            recycledPercentage: p.recycledPercentage,
+            recycledOrigin: p.recycledOrigin,
+            isReplica: true,
+            originalSku,
+          }))
+        );
+
+        return nuevo;
+      });
+
+      await recordAudit(ctx.db, {
+        organizationId: orgId,
+        userId: ctx.user.id,
+        entity: "products",
+        entityId: creado.id,
+        action: "create",
+        changes: {
+          sku: creado.sku,
+          creadoDesde: source.sku,
+          originalSku,
+          piezasCopiadas: source.pieces.length,
+        },
+      });
+
+      return {
+        id: creado.id,
+        sku: creado.sku,
+        originalSku,
+        piecesCopied: source.pieces.length,
+      };
+    }),
+
+  /**
+   * Distribución de SKU originales vs réplicas.
+   *
+   * MB quiere vigilar la proporción: si muchos SKU se crearon duplicando,
+   * conviene verificar que de verdad comparten las condiciones de envasado.
+   */
+  replicaStats: orgProcedure.query(async ({ ctx }) => {
+    const rows = await ctx.db
+      .select({
+        isReplica: products.isReplica,
+        originalSku: products.originalSku,
+        sku: products.sku,
+      })
+      .from(products)
+      .where(
+        and(
+          ctx.orgDbId ? eq(products.organizationId, ctx.orgDbId) : undefined,
+          eq(products.isActive, true)
+        )
+      );
+
+    const replicas = rows.filter((r) => r.isReplica);
+    const total = rows.length;
+
+    // Cuántas réplicas cuelgan de cada original, para saber dónde mirar
+    const porOriginal = new Map<string, number>();
+    for (const r of replicas) {
+      const k = r.originalSku ?? "(sin origen)";
+      porOriginal.set(k, (porOriginal.get(k) ?? 0) + 1);
+    }
+
+    return {
+      total,
+      originals: total - replicas.length,
+      replicas: replicas.length,
+      replicaShare:
+        total > 0 ? Math.round((replicas.length / total) * 1000) / 10 : 0,
+      topOriginals: [...porOriginal.entries()]
+        .map(([originalSku, count]) => ({ originalSku, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10),
+    };
+  }),
 
   /**
    * Replica las piezas de otro SKU.
@@ -430,7 +755,7 @@ export const productRouter = createTRPCRouter({
         });
       }
 
-      return ctx.db.transaction(async (tx) => {
+      const resultado = await ctx.db.transaction(async (tx) => {
         await tx
           .delete(productPieces)
           .where(eq(productPieces.productId, target.id));
@@ -460,26 +785,107 @@ export const productRouter = createTRPCRouter({
           }))
         );
 
+        // La réplica también queda marcada en el producto, no solo en las
+        // piezas: así se puede medir la proporción de réplicas del catálogo
+        await tx
+          .update(products)
+          .set({
+            isReplica: true,
+            originalSku: source.sku,
+            updatedAt: new Date(),
+          })
+          .where(eq(products.id, target.id));
+
         return {
           targetSku: target.sku,
           sourceSku: source.sku,
           piecesCopied: source.pieces.length,
         };
       });
+
+      await recordAudit(ctx.db, {
+        organizationId: orgId,
+        userId: ctx.user.id,
+        entity: "products",
+        entityId: input.targetProductId,
+        action: "update",
+        changes: {
+          sku: resultado.targetSku,
+          replicaDe: resultado.sourceSku,
+          piezasCopiadas: resultado.piecesCopied,
+        },
+      });
+
+      return resultado;
+    }),
+
+  /**
+   * Historial de cambios de la organización.
+   *
+   * MB necesita poder mostrar que fue el cliente quien creó o modificó un SKU,
+   * con fecha y hora, porque eso respalda lo declarado.
+   */
+  auditTrail: orgProcedure
+    .input(
+      z
+        .object({
+          entity: z.string().optional(),
+          limit: z.number().int().min(1).max(200).default(50),
+        })
+        .optional()
+    )
+    .query(async ({ ctx, input }) => {
+      const { entity, limit = 50 } = input ?? {};
+      const rows = await ctx.db
+        .select({
+          id: auditLog.id,
+          entity: auditLog.entity,
+          entityId: auditLog.entityId,
+          action: auditLog.action,
+          changes: auditLog.changes,
+          createdAt: auditLog.createdAt,
+          userEmail: users.email,
+          userFirstName: users.firstName,
+          userLastName: users.lastName,
+        })
+        .from(auditLog)
+        .leftJoin(users, eq(users.id, auditLog.userId))
+        .where(
+          and(
+            ctx.orgDbId ? eq(auditLog.organizationId, ctx.orgDbId) : undefined,
+            entity ? eq(auditLog.entity, entity) : undefined
+          )
+        )
+        .orderBy(desc(auditLog.createdAt))
+        .limit(limit);
+      return rows;
     }),
 
   /** Eliminar producto — verifica ownership */
   delete: orgProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
-      await ctx.db
+      const [borrado] = await ctx.db
         .delete(products)
         .where(
           and(
             eq(products.id, input.id),
             ctx.orgDbId ? eq(products.organizationId, ctx.orgDbId) : undefined
           )
-        );
+        )
+        .returning();
+
+      if (borrado) {
+        await recordAudit(ctx.db, {
+          organizationId: borrado.organizationId,
+          userId: ctx.user.id,
+          entity: "products",
+          entityId: borrado.id,
+          action: "delete",
+          changes: { sku: borrado.sku, name: borrado.name },
+        });
+      }
+
       return { success: true };
     }),
 });

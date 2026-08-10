@@ -5,8 +5,10 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CopyIcon,
+  PencilIcon,
   Loader2Icon,
 } from "lucide-react";
+import Link from "next/link";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -149,21 +151,34 @@ export function ProductRow({
                     </span>
                   )}
                 </p>
-                {candidates.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setReplicaOpen(true);
-                    }}
+                    asChild
+                    onClick={(e) => e.stopPropagation()}
                   >
-                    <CopyIcon className="mr-1 h-3 w-3" />
-                    {product.pieces.length === 0
-                      ? "Copiar piezas de otro SKU"
-                      : "Reemplazar por las de otro SKU"}
+                    <Link href={`/products/${product.id}/edit`}>
+                      <PencilIcon className="mr-1 h-3 w-3" />
+                      Editar SKU
+                    </Link>
                   </Button>
-                )}
+                  {candidates.length > 0 && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setReplicaOpen(true);
+                      }}
+                    >
+                      <CopyIcon className="mr-1 h-3 w-3" />
+                      {product.pieces.length === 0
+                        ? "Copiar piezas de otro SKU"
+                        : "Reemplazar por las de otro SKU"}
+                    </Button>
+                  )}
+                </div>
               </div>
 
               {product.pieces.length === 0 && (

@@ -26,7 +26,9 @@ import {
   ufValues,
   priorityProducts,
   productTypeEnum,
+  simulationScenarios,
 } from "@/server/db/schema";
+import { TRPCError } from "@trpc/server";
 import { eq, and, or, isNull, sql, asc, desc } from "drizzle-orm";
 
 // ── Types ────────────────────────────────────────────────────────
@@ -131,6 +133,104 @@ function aggregateBySig(rows: CostRow[]) {
     referenceCostUf: reference?.[1].costUf ?? 0,
     referenceByMaterial: reference?.[1].byMaterial ?? new Map(),
   };
+}
+
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
+/** Mediana de una lista no vacía */
+function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+/** Normaliza nombres para agrupar piezas equivalentes ("Tapa" = "tapa " = "TAPA") */
+function normName(s: string | null | undefined): string {
+  return String(s ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/**
+ * Tarifas que la organización ya tiene mapeadas, por SIG y segmento.
+ *
+ * Es el abanico real de sustituciones: materiales que esta empresa ya declara y
+ * cuya tarifa está publicada para el año, no un catálogo teórico.
+ *
+ * Se excluyen los mapeos con grasa o peligrosos: su tarifa responde a una
+ * condición de la pieza, no a su materialidad, así que no son una alternativa
+ * de sustitución para una pieza limpia.
+ */
+async function getTariffAlternatives(orgDbId: string | null, year: number) {
+  const [latestUf] = await db
+    .select()
+    .from(ufValues)
+    .orderBy(desc(ufValues.date))
+    .limit(1);
+  const ufClp = Number(latestUf?.valueClp ?? 0);
+
+  const rows = await db
+    .select({
+      systemName: managementSystems.name,
+      segment: tariffMappings.segment,
+      materialDetail: tariffMappings.materialDetail,
+      categoryMaterial: tariffCategories.material,
+      categorySubcategory: tariffCategories.subcategory,
+      rateValue: tariffs.rateValue,
+      rateUfPerTon: tariffs.rateUfPerTon,
+      rateUnit: tariffs.rateUnit,
+    })
+    .from(tariffMappings)
+    .innerJoin(
+      managementSystems,
+      eq(tariffMappings.systemId, managementSystems.id)
+    )
+    .innerJoin(
+      tariffCategories,
+      eq(tariffMappings.tariffCategoryId, tariffCategories.id)
+    )
+    .innerJoin(
+      tariffs,
+      and(eq(tariffs.categoryId, tariffCategories.id), eq(tariffs.year, year))
+    )
+    .where(
+      and(
+        orgDbId ? eq(tariffMappings.organizationId, orgDbId) : undefined,
+        eq(tariffMappings.hasGrease, false),
+        eq(tariffMappings.isHazardous, false)
+      )
+    );
+
+  // "SIG|segmento" → materialDetail → { categoría, tarifa }
+  const pools = new Map<
+    string,
+    Map<string, { categoryLabel: string; rateUfPerTon: number }>
+  >();
+  for (const r of rows) {
+    const rateValue = Number(r.rateValue ?? r.rateUfPerTon);
+    const rate =
+      r.rateUnit === "CLP/kg"
+        ? ufClp > 0
+          ? (rateValue * 1000) / ufClp
+          : 0
+        : rateValue;
+    if (rate <= 0) continue;
+
+    const key = `${r.systemName}|${r.segment}`;
+    if (!pools.has(key)) pools.set(key, new Map());
+    const pool = pools.get(key)!;
+    const prev = pool.get(r.materialDetail);
+    if (!prev || rate < prev.rateUfPerTon) {
+      pool.set(r.materialDetail, {
+        categoryLabel: `${r.categoryMaterial} / ${r.categorySubcategory}`,
+        rateUfPerTon: rate,
+      });
+    }
+  }
+  return pools;
 }
 
 /**
@@ -566,11 +666,25 @@ export const costsRouter = createTRPCRouter({
         .extend({
           limit: z.number().int().min(1).max(50).default(10),
           targetSystem: z.string().optional(),
+          /**
+           * Ordenar por costo total o por costo unitario (UF/ton).
+           *
+           * Por total siempre ganan los SKU de mayor volumen, que es
+           * información pobre para priorizar ecodiseño: dice cuánto pesan en la
+           * factura, no cuán ineficiente es su envase. El factor UF/ton
+           * normaliza y hace comparables SKU de volúmenes muy distintos.
+           */
+          sortBy: z.enum(["costTotal", "costPerTon"]).default("costTotal"),
         })
         .optional()
     )
     .query(async ({ ctx, input }) => {
-      const { limit = 10, targetSystem, ...filters } = input ?? {};
+      const {
+        limit = 10,
+        targetSystem,
+        sortBy = "costTotal",
+        ...filters
+      } = input ?? {};
       const rows = await getCostRows(ctx.orgDbId, filters);
 
       // Filtrar a un solo SIG si se especifica
@@ -609,16 +723,422 @@ export const costsRouter = createTRPCRouter({
         }
       }
 
-      const ranked = Array.from(skuMap.values())
-        .map((s) => ({
-          ...s,
-          tons: Math.round(s.tons * 100) / 100,
-          costUf: Math.round(s.costUf * 100) / 100,
-        }))
-        .sort((a, b) => b.costUf - a.costUf)
+      const conFactor = Array.from(skuMap.values()).map((s) => ({
+        ...s,
+        tons: Math.round(s.tons * 100) / 100,
+        costUf: Math.round(s.costUf * 100) / 100,
+        /**
+         * Factor de costo: UF por tonelada declarada. Es la tarifa promedio
+         * ponderada del envase, independiente del volumen vendido.
+         */
+        costPerTon: s.tons > 0 ? Math.round((s.costUf / s.tons) * 100) / 100 : 0,
+      }));
+
+      const ranked = conFactor
+        .sort((a, b) =>
+          sortBy === "costPerTon"
+            ? b.costPerTon - a.costPerTon
+            : b.costUf - a.costUf
+        )
         .slice(0, limit);
 
       return ranked;
+    }),
+
+  /**
+   * opportunities — Ranking de oportunidades de ecodiseño (P5).
+   *
+   * Cada oportunidad sale de un dato verificable, nunca de un porcentaje
+   * supuesto. Dos mecanismos:
+   *
+   *   1. SUSTITUCIÓN DE MATERIAL. Se compara la tarifa que paga la pieza contra
+   *      las otras tarifas que la organización ya tiene mapeadas en el mismo SIG
+   *      y el mismo segmento. El ahorro es la diferencia real de tarifa por el
+   *      tonelaje real.
+   *
+   *      Restringido a la MISMA CLASE de material: un film de PS se compara con
+   *      otros plásticos, no con la lámina de aluminio que paga menos. Cruzar
+   *      familias da números más grandes y consejos inservibles.
+   *
+   *      Además solo aplica a piezas cuya tarifa está en la mitad cara de su
+   *      propia familia. Avisar que el material más barato podría ser un 2% más
+   *      barato es ruido que entierra lo que sí importa.
+   *
+   *   2. REDUCCIÓN DE GRAMAJE. Se compara el peso de la pieza contra la MEDIANA
+   *      de las piezas equivalentes del propio catálogo (mismo nombre, mismo
+   *      material, mismo segmento). El benchmark es empírico y la meta ya la
+   *      cumple más de la mitad de las piezas de la empresa, así que es
+   *      defendible ante el cliente: no es una aspiración, es su propio dato.
+   *
+   *      Exige al menos 4 piezas comparables. Con menos, la mediana no dice nada.
+   *
+   * El total NO es la suma de las filas: aligerar y sustituir se combinan
+   * multiplicativamente sobre la misma pieza, así que se recalcula el costo con
+   * ambos cambios aplicados.
+   */
+  opportunities: orgProcedure
+    .input(
+      costFilters
+        .extend({ limit: z.number().int().min(1).max(100).default(20) })
+        .default({ limit: 20 })
+    )
+    .query(async ({ ctx, input }) => {
+      const { limit, ...filters } = input;
+      const rows = await getCostRows(ctx.orgDbId, filters);
+
+      const agg = aggregateBySig(rows);
+      const referenceSystem = agg.referenceSystem;
+      const referenceCostUf = agg.referenceCostUf;
+
+      if (rows.length === 0 || !referenceSystem || referenceCostUf <= 0) {
+        return {
+          items: [],
+          totalItems: 0,
+          referenceSystem,
+          referenceCostUf: r2(referenceCostUf),
+          tariffYear: filters.year ?? null,
+          cohorts: 0,
+          totals: {
+            combinedSavingsUf: 0,
+            combinedPct: 0,
+            materialUf: 0,
+            gramajeUf: 0,
+          },
+        };
+      }
+
+      // Año del abanico de tarifas: el filtrado, o el más reciente con ventas
+      const tariffYear = filters.year ?? Math.max(...rows.map((r) => r.salesYear));
+      const pools = await getTariffAlternatives(ctx.orgDbId, tariffYear);
+
+      // materialDetail → clase observada en el catálogo, para no cruzar familias
+      const classOf = new Map<string, string>();
+      for (const r of rows) classOf.set(r.materialDetail, r.materialClass);
+
+      // Benchmark de gramaje: una muestra por SKU (no una por mes ni por SIG)
+      const MIN_COHORT = 4;
+      const cohortWeights = new Map<string, Map<string, number>>();
+      for (const r of rows) {
+        if (r.weightUnit !== "g") continue;
+        const key = `${normName(r.pieceName)}|${normName(r.materialDetail)}|${r.isDomiciliary}`;
+        if (!cohortWeights.has(key)) cohortWeights.set(key, new Map());
+        cohortWeights.get(key)!.set(r.sku, r.weightGrams);
+      }
+      const benchmark = new Map<string, { median: number; n: number }>();
+      for (const [key, skus] of cohortWeights) {
+        if (skus.size < MIN_COHORT) continue;
+        // Redondeado en origen: la meta que se muestra ("bajar a 6,23 g") tiene
+        // que ser la misma con la que se calcula el ahorro, o el simulador da
+        // un número distinto al del ranking para el mismo cambio.
+        benchmark.set(key, {
+          median: r2(median([...skus.values()])),
+          n: skus.size,
+        });
+      }
+
+      // Piezas del SIG de referencia, sumadas a través de los períodos
+      interface PieceAgg {
+        sku: string;
+        productName: string;
+        pieceName: string;
+        materialClass: string;
+        materialDetail: string;
+        isDomiciliary: boolean;
+        weightGrams: number;
+        weightUnit: string;
+        tons: number;
+        costUf: number;
+      }
+      const pieces = new Map<string, PieceAgg>();
+      for (const r of rows) {
+        if (r.systemName !== referenceSystem) continue;
+        const key = `${r.sku}|${normName(r.pieceName)}|${r.materialDetail}|${r.isDomiciliary}`;
+        const { tons, costUf } = calcCost(r);
+        const p = pieces.get(key);
+        if (p) {
+          p.tons += tons;
+          p.costUf += costUf;
+        } else {
+          pieces.set(key, {
+            sku: r.sku,
+            productName: r.productName,
+            pieceName: r.pieceName,
+            materialClass: r.materialClass,
+            materialDetail: r.materialDetail,
+            isDomiciliary: r.isDomiciliary,
+            weightGrams: r.weightGrams,
+            weightUnit: r.weightUnit,
+            tons,
+            costUf,
+          });
+        }
+      }
+
+      /** Prioridad según cuánto pesa el ahorro en la factura REP de la empresa */
+      const priorityOf = (savingUf: number): "Alta" | "Media" | "Baja" => {
+        const share = savingUf / referenceCostUf;
+        return share >= 0.01 ? "Alta" : share >= 0.0025 ? "Media" : "Baja";
+      };
+      const uf = (n: number, d = 2) =>
+        n.toLocaleString("es-CL", {
+          minimumFractionDigits: d,
+          maximumFractionDigits: d,
+        });
+
+      interface Opportunity {
+        rank: number;
+        kind: "material" | "gramaje";
+        sku: string;
+        productName: string;
+        pieceName: string;
+        materialDetail: string;
+        segment: string;
+        action: string;
+        /** Por qué el ahorro es ese: los datos que lo sostienen */
+        evidence: string;
+        /** Cambio exacto, para abrirlo en el simulador sin parsear el texto */
+        target: { newWeightGrams?: number; newMaterialDetail?: string };
+        currentCostUf: number;
+        savingsUf: number;
+        savingsPct: number;
+        priority: "Alta" | "Media" | "Baja";
+      }
+
+      /** Bajo esto es polvo numérico y solo ensucia el ranking */
+      const MIN_SAVING_UF = 0.01;
+      const items: Opportunity[] = [];
+      let combinedSavingsUf = 0;
+      let materialUf = 0;
+      let gramajeUf = 0;
+
+      for (const p of pieces.values()) {
+        // Sin tarifa mapeada no hay ahorro que calcular; eso se ve en Riesgos
+        if (p.costUf <= 0 || p.tons <= 0 || p.weightGrams <= 0) continue;
+
+        const segment = p.isDomiciliary ? "Domiciliario" : "No Domiciliario";
+        const rate = p.costUf / p.tons;
+
+        // ── 1. Sustitución de material, dentro de la misma clase ──
+        let bestAlt: {
+          materialDetail: string;
+          categoryLabel: string;
+          rateUfPerTon: number;
+        } | null = null;
+
+        const pool = pools.get(`${referenceSystem}|${segment}`);
+        if (pool) {
+          const sameClass = [...pool.entries()].filter(
+            ([mat]) =>
+              mat !== p.materialDetail && classOf.get(mat) === p.materialClass
+          );
+          if (sameClass.length > 0) {
+            const familyRates = [
+              ...sameClass.map(([, v]) => v.rateUfPerTon),
+              rate,
+            ];
+            const cheapest = sameClass
+              .filter(([, v]) => v.rateUfPerTon < rate * 0.95)
+              .sort((a, b) => a[1].rateUfPerTon - b[1].rateUfPerTon)[0];
+            if (cheapest && rate >= median(familyRates)) {
+              bestAlt = { materialDetail: cheapest[0], ...cheapest[1] };
+            }
+          }
+        }
+
+        // ── 2. Reducción de gramaje contra la mediana del propio catálogo ──
+        const bench =
+          p.weightUnit === "g"
+            ? benchmark.get(
+                `${normName(p.pieceName)}|${normName(p.materialDetail)}|${p.isDomiciliary}`
+              )
+            : undefined;
+        const bestWeight =
+          bench && p.weightGrams > bench.median * 1.05 ? bench : null;
+
+        if (bestAlt) {
+          const savingsUf = p.tons * (rate - bestAlt.rateUfPerTon);
+          if (savingsUf >= MIN_SAVING_UF) {
+            materialUf += savingsUf;
+            items.push({
+              rank: 0,
+              kind: "material",
+              sku: p.sku,
+              productName: p.productName,
+              pieceName: p.pieceName,
+              materialDetail: p.materialDetail,
+              segment,
+              action: `Sustituir ${p.materialDetail} → ${bestAlt.materialDetail}`,
+              target: { newMaterialDetail: bestAlt.materialDetail },
+              evidence:
+                `${p.materialDetail} paga ${uf(rate, 3)} UF/ton en ${referenceSystem}; ` +
+                `${bestAlt.materialDetail} paga ${uf(bestAlt.rateUfPerTon, 3)} en «${bestAlt.categoryLabel}»`,
+              currentCostUf: r2(p.costUf),
+              savingsUf: r2(savingsUf),
+              savingsPct: r2((savingsUf / p.costUf) * 100),
+              priority: priorityOf(savingsUf),
+            });
+          }
+        }
+
+        if (bestWeight) {
+          const savingsUf = p.costUf * (1 - bestWeight.median / p.weightGrams);
+          if (savingsUf >= MIN_SAVING_UF) {
+            gramajeUf += savingsUf;
+            items.push({
+              rank: 0,
+              kind: "gramaje",
+              sku: p.sku,
+              productName: p.productName,
+              pieceName: p.pieceName,
+              materialDetail: p.materialDetail,
+              segment,
+              action: `Bajar ${p.pieceName} de ${uf(p.weightGrams)} g a ${uf(bestWeight.median)} g`,
+              target: { newWeightGrams: r2(bestWeight.median) },
+              evidence:
+                `la mediana de tus ${bestWeight.n} ${normName(p.pieceName)} de ` +
+                `${p.materialDetail} es ${uf(bestWeight.median)} g: más de la mitad ya pesa menos`,
+              currentCostUf: r2(p.costUf),
+              savingsUf: r2(savingsUf),
+              savingsPct: r2((savingsUf / p.costUf) * 100),
+              priority: priorityOf(savingsUf),
+            });
+          }
+        }
+
+        // Efecto combinado sobre esta pieza, sin contar dos veces
+        const newRate = bestAlt?.rateUfPerTon ?? rate;
+        const newWeight = bestWeight?.median ?? p.weightGrams;
+        combinedSavingsUf +=
+          p.costUf - p.tons * (newWeight / p.weightGrams) * newRate;
+      }
+
+      items.sort((a, b) => b.savingsUf - a.savingsUf);
+      items.forEach((o, i) => (o.rank = i + 1));
+
+      return {
+        items: items.slice(0, limit),
+        totalItems: items.length,
+        /** SIG cuyas tarifas se usaron para el cálculo */
+        referenceSystem,
+        referenceCostUf: r2(referenceCostUf),
+        tariffYear,
+        /** Cohortes con muestra suficiente para el benchmark de gramaje */
+        cohorts: benchmark.size,
+        totals: {
+          /** Recalculado con ambos cambios aplicados, no la suma de las filas */
+          combinedSavingsUf: r2(combinedSavingsUf),
+          combinedPct: r2((combinedSavingsUf / referenceCostUf) * 100),
+          materialUf: r2(materialUf),
+          gramajeUf: r2(gramajeUf),
+        },
+      };
+    }),
+
+  /**
+   * Escenarios guardados.
+   *
+   * MB pidió poder guardar y comparar varias alternativas de ecodiseño en vez
+   * de ir de una en una. Se guarda la DEFINICIÓN del cambio, no solo el
+   * resultado: la comparación recalcula con `simulate`, así los números no
+   * quedan obsoletos si cambian las tarifas o el mapeo.
+   *
+   * `results` guarda además una foto del momento en que se creó, para poder
+   * mostrar si algo cambió desde entonces.
+   */
+  listScenarios: orgProcedure
+    .input(z.object({ sku: z.string().optional() }).optional())
+    .query(async ({ ctx, input }) => {
+      return ctx.db
+        .select()
+        .from(simulationScenarios)
+        .where(
+          and(
+            ctx.orgDbId
+              ? eq(simulationScenarios.organizationId, ctx.orgDbId)
+              : undefined,
+            input?.sku ? eq(simulationScenarios.sku, input.sku) : undefined
+          )
+        )
+        .orderBy(desc(simulationScenarios.createdAt));
+    }),
+
+  saveScenario: orgProcedure
+    .input(
+      z.object({
+        name: z.string().min(1, "Ponle un nombre al escenario"),
+        notes: z.string().optional(),
+        sku: z.string().min(1),
+        year: z.number().int(),
+        changes: z.object({
+          pieceName: z.string().optional(),
+          materialDetail: z.string().optional(),
+          newWeightGrams: z.number().positive().optional(),
+          newMaterialDetail: z.string().optional(),
+          newUnitsSold: z.number().int().positive().optional(),
+        }),
+        /** Foto del resultado al guardar, para detectar cambios posteriores */
+        results: z
+          .array(
+            z.object({
+              systemName: z.string(),
+              tons: z.number(),
+              costUf: z.number(),
+            })
+          )
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (!ctx.orgDbId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Sin organización activa",
+        });
+      }
+
+      const tieneCambios =
+        input.changes.newWeightGrams !== undefined ||
+        input.changes.newMaterialDetail !== undefined ||
+        input.changes.newUnitsSold !== undefined;
+      if (!tieneCambios) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "El escenario no cambia nada: modifica peso, material o volumen antes de guardarlo",
+        });
+      }
+
+      const [row] = await ctx.db
+        .insert(simulationScenarios)
+        .values({
+          organizationId: ctx.orgDbId,
+          name: input.name,
+          notes: input.notes ?? null,
+          sku: input.sku,
+          year: input.year,
+          changes: input.changes,
+          results: input.results ?? null,
+          createdBy: ctx.user.id,
+        })
+        .returning();
+
+      return row;
+    }),
+
+  deleteScenario: orgProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      await ctx.db
+        .delete(simulationScenarios)
+        .where(
+          and(
+            eq(simulationScenarios.id, input.id),
+            ctx.orgDbId
+              ? eq(simulationScenarios.organizationId, ctx.orgDbId)
+              : undefined
+          )
+        );
+      return { success: true };
     }),
 
   /**
@@ -652,92 +1172,58 @@ export const costsRouter = createTRPCRouter({
         return { error: "SKU no encontrado o sin datos para ese año" };
       }
 
-      // Cambio de materialidad: re-mapear la tarifa del material nuevo
-      // contra el SIG activo. Mismo fallback que getCostRows:
-      //   1. Mapeo manual → 2. Tarifa única del SIG → 3. sin tarifa (0)
-      const newRateBySegment = new Map<string, number>();
+      /**
+       * Cambio de materialidad: tarifa del material nuevo POR SIG y segmento.
+       *
+       * Antes esto solo se resolvía contra `activeSystemId`. Sin SIG fijo —el
+       * modo libre, que es el que usan para comparar— la tarifa quedaba en 0 y
+       * el simulador reportaba que cambiar de material eliminaba el 100% del
+       * costo de la pieza. Un cambio de PS a PEAD aparecía como 106,76 UF de
+       * ahorro cuando el real es 61,72: el resto era la pieza dejando de
+       * costar, no un ahorro.
+       *
+       * Orden: 1. Mapeo de la organización → 2. Tarifa única del SIG (NEUVOL,
+       * VALORA+, que cobran parejo) → 3. sin tarifa (0).
+       */
+      const pools = input.newMaterialDetail
+        ? await getTariffAlternatives(ctx.orgDbId, input.year)
+        : null;
+
+      // Fallback: SIG que cobran una sola tarifa para todo
+      const uniqueRateBySystem = new Map<string, number>();
       if (input.newMaterialDetail) {
-        const prod = await db.query.products.findFirst({
-          where: (p, { eq: _eq, and: _and }) =>
-            _and(
-              _eq(p.sku, input.sku),
-              ctx.orgDbId ? _eq(p.organizationId, ctx.orgDbId) : undefined
-            ),
+        const [latestUf] = await db
+          .select()
+          .from(ufValues)
+          .orderBy(desc(ufValues.date))
+          .limit(1);
+        const ufClp = Number(latestUf?.valueClp ?? 0);
+        const systems = await db.query.managementSystems.findMany({
+          with: { tariffCategories: { with: { tariffs: true } } },
         });
-        const link = prod?.priorityProductId
-          ? await db.query.organizationPriorityProducts.findFirst({
-              where: (l, { eq: _eq, and: _and }) =>
-                _and(
-                  _eq(l.organizationId, prod.organizationId),
-                  _eq(l.priorityProductId, prod.priorityProductId!)
-                ),
-            })
-          : null;
-        if (link?.activeSystemId) {
-          const [latestUf] = await db
-            .select()
-            .from(ufValues)
-            .orderBy(desc(ufValues.date))
-            .limit(1);
-          const ufClp = Number(latestUf?.valueClp ?? 0);
-
-          // Fallback: SIG con tarifa única (1 sola categoría)
-          const activeSystem = await db.query.managementSystems.findFirst({
-            where: (s, { eq: _eq }) => _eq(s.id, link.activeSystemId!),
-            with: { tariffCategories: { with: { tariffs: true } } },
-          });
-          const isUniqueTariff = activeSystem?.tariffCategories.length === 1;
-          const uniqueTariff = isUniqueTariff
-            ? activeSystem!.tariffCategories[0].tariffs.find(
-                (t) => t.year === input.year
-              )
-            : null;
-
-          for (const segment of ["Domiciliario", "No Domiciliario"]) {
-            // 1. Mapeo manual
-            const mapping = await db.query.tariffMappings.findFirst({
-              where: (tm, { eq: _eq, and: _and }) =>
-                _and(
-                  _eq(tm.organizationId, prod!.organizationId),
-                  _eq(tm.systemId, link.activeSystemId!),
-                  _eq(tm.materialDetail, input.newMaterialDetail!),
-                  _eq(tm.segment, segment),
-                  _eq(tm.hasGrease, false),
-                  _eq(tm.isHazardous, false)
-                ),
-            });
-            let rateValue = 0;
-            let rateUnit = "UF/ton";
-            if (mapping) {
-              const tariff = await db.query.tariffs.findFirst({
-                where: (t, { eq: _eq, and: _and }) =>
-                  _and(
-                    _eq(t.categoryId, mapping.tariffCategoryId),
-                    _eq(t.year, input.year)
-                  ),
-              });
-              if (tariff) {
-                rateValue = Number(tariff.rateValue ?? tariff.rateUfPerTon);
-                rateUnit = tariff.rateUnit;
-              }
-            } else if (uniqueTariff) {
-              // 2. Tarifa única del SIG (NEUVOL, VALORA+, etc.)
-              rateValue = Number(uniqueTariff.rateValue ?? uniqueTariff.rateUfPerTon);
-              rateUnit = uniqueTariff.rateUnit;
-            }
-            if (rateValue > 0) {
-              newRateBySegment.set(
-                segment,
-                rateUnit === "CLP/kg"
-                  ? ufClp > 0
-                    ? (rateValue * 1000) / ufClp
-                    : 0
-                  : rateValue
-              );
-            }
-          }
+        for (const s of systems) {
+          if (s.tariffCategories.length !== 1) continue;
+          const t = s.tariffCategories[0].tariffs.find(
+            (x) => x.year === input.year
+          );
+          if (!t) continue;
+          const rateValue = Number(t.rateValue ?? t.rateUfPerTon);
+          uniqueRateBySystem.set(
+            s.name,
+            t.rateUnit === "CLP/kg"
+              ? ufClp > 0
+                ? (rateValue * 1000) / ufClp
+                : 0
+              : rateValue
+          );
         }
       }
+
+      const newRateFor = (systemName: string, segment: string) =>
+        pools?.get(`${systemName}|${segment}`)?.get(input.newMaterialDetail!)
+          ?.rateUfPerTon ??
+        uniqueRateBySystem.get(systemName) ??
+        0;
 
       // Escenario actual
       const currentBySig = new Map<string, { tons: number; costUf: number }>();
@@ -769,7 +1255,7 @@ export const costsRouter = createTRPCRouter({
           unitsSold: input.newUnitsSold ?? row.unitsSold,
           rateUfPerTon:
             isTarget && input.newMaterialDetail
-              ? (newRateBySegment.get(segment) ?? 0)
+              ? newRateFor(row.systemName, segment)
               : row.rateUfPerTon,
         };
         const { tons, costUf } = calcCost(simRow);

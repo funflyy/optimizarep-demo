@@ -29,6 +29,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ScenarioPanel } from "./scenario-panel";
 import {
   SlidersHorizontalIcon,
   ArrowRightIcon,
@@ -85,13 +86,10 @@ export default function SimulatorPage() {
     };
   }, [selectedSku, year, newWeight, newUnits, newMaterial, pieceName, pieceMaterial]);
 
-  const {
-    data: simulation,
-    isLoading,
-    isFetching,
-  } = trpc.costs.simulate.useQuery(simulationInput!, {
-    enabled: !!simulationInput,
-  });
+  const { data: simulation, isLoading } = trpc.costs.simulate.useQuery(
+    simulationInput!,
+    { enabled: !!simulationInput }
+  );
 
   const hasError = simulation && "error" in simulation;
   const hasResults = simulation && !hasError && simulation.results?.length > 0;
@@ -308,6 +306,22 @@ export default function SimulatorPage() {
         </CardContent>
       </Card>
 
+      {/* Comparador: guardar alternativas y verlas una al lado de otra */}
+      {selectedSku && year && (
+        <ScenarioPanel
+          sku={selectedSku}
+          year={Number(year)}
+          changes={{
+            pieceName,
+            materialDetail: pieceMaterial,
+            newWeightGrams: newWeight ? Number(newWeight) : undefined,
+            newMaterialDetail: newMaterial || undefined,
+            newUnitsSold: newUnits ? Number(newUnits) : undefined,
+          }}
+          canSave={Boolean(newWeight || newMaterial || newUnits)}
+        />
+      )}
+
       {/* Estado vacío */}
       {!selectedSku && (
         <Card className="border-dashed">
@@ -327,7 +341,7 @@ export default function SimulatorPage() {
         <Card className="border-amber-500/50 bg-amber-500/5">
           <CardContent className="py-8 text-center">
             <p className="text-amber-600 font-medium">
-              {(simulation as any).error}
+              {simulation && "error" in simulation ? simulation.error : null}
             </p>
             <p className="text-muted-foreground text-sm mt-1">
               Verifica que el producto tenga ventas y mapeo de tarifas para ese

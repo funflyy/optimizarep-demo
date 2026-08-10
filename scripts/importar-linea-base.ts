@@ -21,6 +21,7 @@ import { eq, inArray } from "drizzle-orm";
 import * as XLSX from "xlsx";
 import { readFileSync, existsSync } from "node:fs";
 import * as schema from "../src/server/db/schema";
+import { pieceValues } from "../src/server/piece-values";
 import {
   isImportable,
   parseProductsSheet,
@@ -116,13 +117,15 @@ async function main() {
             name: prod.name,
             brand: prod.brand || null,
             category: prod.category || null,
+            family: prod.family ?? null,
+            subfamily: prod.subfamily ?? null,
             priorityProductId: pp?.id ?? null,
           })
           .returning();
 
         await tx
           .insert(schema.productPieces)
-          .values(prod.pieces.map((p) => ({ ...p, productId: row.id })));
+          .values(prod.pieces.map((p) => pieceValues(p, row.id)));
 
         if (prod.sales.length > 0) {
           await tx.insert(schema.salesRecords).values(

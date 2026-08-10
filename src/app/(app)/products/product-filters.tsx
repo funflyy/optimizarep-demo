@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -18,6 +17,13 @@ interface ProductFiltersProps {
   category: string;
   onSearchChange: (v: string) => void;
   onCategoryChange: (v: string) => void;
+  /**
+   * Familias. Se pasa vacío mientras nadie haya cargado una familia explícita:
+   * en ese caso el filtro sería idéntico al de categoría y no se muestra.
+   */
+  families?: string[];
+  family?: string;
+  onFamilyChange?: (v: string) => void;
 }
 
 export function ProductFilters({
@@ -26,6 +32,9 @@ export function ProductFilters({
   category,
   onSearchChange,
   onCategoryChange,
+  families,
+  family = "all",
+  onFamilyChange,
 }: ProductFiltersProps) {
   return (
     <div className="flex items-center gap-3">
@@ -48,6 +57,21 @@ export function ProductFilters({
           </Button>
         )}
       </div>
+      {families && families.length > 0 && onFamilyChange && (
+        <Select value={family} onValueChange={onFamilyChange}>
+          <SelectTrigger className="w-[180px]">
+            <SelectValue placeholder="Todas las familias" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Todas las familias</SelectItem>
+            {families.map((f) => (
+              <SelectItem key={f} value={f}>
+                {f}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
       <Select value={category} onValueChange={onCategoryChange}>
         <SelectTrigger className="w-[180px]">
           <SelectValue placeholder="Todas las categorías" />
