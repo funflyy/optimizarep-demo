@@ -23,6 +23,7 @@ import {
   ShieldAlertIcon,
   SlidersHorizontalIcon,
   LightbulbIcon,
+  GaugeIcon,
   BuildingIcon,
   Building2Icon,
   RecycleIcon,
@@ -58,6 +59,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       title: "Oportunidades",
       url: "/opportunities",
       icon: (<LightbulbIcon />),
+    },
+    {
+      title: "Circularidad",
+      url: "/circularity",
+      icon: (<GaugeIcon />),
     },
     {
       // Residuos entregados a gestores. Se declara al SINADER y es

@@ -10,6 +10,7 @@ import { superAdminRouter } from "./_superadmin";
 import { enterpriseRouter } from "./_enterprise";
 import { authRouter } from "./auth";
 import { industrialWasteRouter } from "./industrial-waste";
+import { circularityRouter } from "./circularity";
 
 /**
  * Root router — agrega subrouters aquí.
@@ -26,6 +27,7 @@ export const appRouter = createTRPCRouter({
   superadmin: superAdminRouter,
   enterprise: enterpriseRouter,
   industrialWaste: industrialWasteRouter,
+  circularity: circularityRouter,
 });
 
 export type AppRouter = typeof appRouter;
